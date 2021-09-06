@@ -30,6 +30,31 @@ enum virtio_rdma_type {
 	VIRTIO_RDMA_TYPE_KERNEL
 };
 
+struct virtio_rdma_port_attr {
+	enum ib_port_state	state;
+	enum ib_mtu	 max_mtu;
+	enum ib_mtu	 active_mtu;
+	u32          phys_mtu;
+	int			 gid_tbl_len;
+	unsigned int ip_gids:1;
+	u32			 port_cap_flags;
+	u32          max_msg_sz;
+	u32          bad_pkey_cntr;
+	u32          qkey_viol_cntr;
+	u16          pkey_tbl_len;
+	u32          sm_lid;
+	u32          lid;
+	u8           lmc;
+	u8           max_vl_num;
+	u8           sm_sl;
+	u8           subnet_timeout;
+	u8           init_type_reply;
+	u8           active_width;
+	u16          active_speed;
+	u8           phys_state;
+	u16          port_cap_flags2;
+};
+
 struct virtio_rdma_pd {
 	struct ib_pd ibpd;
 	u32 pd_handle;

@@ -3040,13 +3040,13 @@ static inline bool rdma_protocol_ib(const struct ib_device *device,
 	       RDMA_CORE_CAP_PROT_IB;
 }
 
-static inline bool rdma_protocol_virtio(const struct ib_device *device, u8 port_num)
+static inline bool rdma_protocol_virtio(const struct ib_device *device, u32 port_num)
 {
 	return device->port_data[port_num].immutable.core_cap_flags &
 	       RDMA_CORE_CAP_PROT_VIRTIO;
 }
 
-static inline bool rdma_protocol_virtio_or_roce(const struct ib_device *device, u8 port_num)
+static inline bool rdma_protocol_virtio_or_roce(const struct ib_device *device, u32 port_num)
 {
 	return device->port_data[port_num].immutable.core_cap_flags &
 	       (RDMA_CORE_CAP_PROT_VIRTIO | RDMA_CORE_CAP_PROT_ROCE | RDMA_CORE_CAP_PROT_ROCE_UDP_ENCAP);

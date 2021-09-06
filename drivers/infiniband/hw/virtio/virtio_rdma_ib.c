@@ -182,7 +182,7 @@ static struct scatterlist* init_sg(void* buf, unsigned long nbytes) {
 	return sg;
 }
 
-static int virtio_rdma_port_immutable(struct ib_device *ibdev, u8 port_num,
+static int virtio_rdma_port_immutable(struct ib_device *ibdev, u32 port_num,
 				      struct ib_port_immutable *immutable)
 {
 	struct ib_port_attr attr;
@@ -230,11 +230,12 @@ static int virtio_rdma_query_device(struct ib_device *ibdev,
 	return rc;
 }
 
-static int virtio_rdma_query_port(struct ib_device *ibdev, u8 port,
+static int virtio_rdma_query_port(struct ib_device *ibdev, u32 port,
 				  struct ib_port_attr *props)
 {
 	struct scatterlist in, *out;
 	struct cmd_query_port *cmd;
+	struct virtio_rdma_port_attr port_attr;
 	int offs;
 	int rc;
 
@@ -242,9 +243,7 @@ static int virtio_rdma_query_port(struct ib_device *ibdev, u8 port,
 	if (!cmd)
 		return -ENOMEM;
 
-	offs = offsetof(struct ib_port_attr, state);
-
-	out = init_sg((void *)props + offs, sizeof(*props) - offs);
+	out = init_sg(&port_attr, sizeof(port_attr));
 	if (!out) {
 		kfree(cmd);
 		return -ENOMEM;
@@ -256,6 +255,29 @@ static int virtio_rdma_query_port(struct ib_device *ibdev, u8 port,
 	rc = virtio_rdma_exec_cmd(to_vdev(ibdev), VIRTIO_CMD_QUERY_PORT, &in,
 				  out);
 
+	props->state = port_attr.state;
+	props->max_mtu = port_attr.max_mtu;
+	props->active_width = port_attr.active_width;
+	props->phys_mtu = port_attr.phys_mtu;
+	props->gid_tbl_len = port_attr.gid_tbl_len;
+	props->ip_gids = port_attr.ip_gids;
+	props->port_cap_flags = port_attr.port_cap_flags;
+	props->max_msg_sz = port_attr.max_msg_sz;
+	props->bad_pkey_cntr = port_attr.bad_pkey_cntr;
+	props->qkey_viol_cntr = port_attr.qkey_viol_cntr;
+	props->pkey_tbl_len = port_attr.pkey_tbl_len;
+	props->sm_lid = port_attr.sm_lid;
+	props->lid = port_attr.lid;
+	props->lmc = port_attr.lmc;
+	props->max_vl_num = port_attr.max_vl_num;
+	props->sm_sl = port_attr.sm_sl;
+	props->subnet_timeout = port_attr.subnet_timeout;
+	props->init_type_reply = port_attr.init_type_reply;
+	props->active_width = port_attr.active_width;
+	props->active_speed = port_attr.active_speed;
+	props->phys_state = port_attr.phys_state;
+	props->port_cap_flags2 = port_attr.port_cap_flags2;
+
 	kfree(out);
 	kfree(cmd);
 
@@ -263,7 +285,7 @@ static int virtio_rdma_query_port(struct ib_device *ibdev, u8 port,
 }
 
 static struct net_device *virtio_rdma_get_netdev(struct ib_device *ibdev,
-						 u8 port_num)
+						 u32 port_num)
 {
 	struct virtio_rdma_dev *ri = to_vdev(ibdev);
 	return ri->netdev;
@@ -393,7 +415,7 @@ out:
 	return rc;
 }
 
-void virtio_rdma_destroy_cq(struct ib_cq *cq, struct ib_udata *udata)
+static int virtio_rdma_destroy_cq(struct ib_cq *cq, struct ib_udata *udata)
 {
 	struct virtio_rdma_cq *vcq;
 	struct scatterlist in, out;
@@ -403,12 +425,12 @@ void virtio_rdma_destroy_cq(struct ib_cq *cq, struct ib_udata *udata)
 
 	cmd = kmalloc(sizeof(*cmd), GFP_ATOMIC);
 	if (!cmd)
-		return;
+		return -ENOMEM;
 
 	rsp = kmalloc(sizeof(*rsp), GFP_ATOMIC);
 	if (!rsp) {
 		kfree(cmd);
-		return;
+		return -ENOMEM;
 	}
 
 	vcq = to_vcq(cq);
@@ -434,9 +456,10 @@ void virtio_rdma_destroy_cq(struct ib_cq *cq, struct ib_udata *udata)
 
 	kfree(cmd);
 	kfree(rsp);
+	return 0;
 }
 
-int virtio_rdma_alloc_pd(struct ib_pd *ibpd, struct ib_udata *udata)
+static int virtio_rdma_alloc_pd(struct ib_pd *ibpd, struct ib_udata *udata)
 {
 	struct virtio_rdma_pd *pd = to_vpd(ibpd);
 	struct ib_device *ibdev = ibpd->device;
@@ -480,7 +503,7 @@ out:
 	return rc;
 }
 
-void virtio_rdma_dealloc_pd(struct ib_pd *pd, struct ib_udata *udata)
+static int virtio_rdma_dealloc_pd(struct ib_pd *pd, struct ib_udata *udata)
 {
 	struct virtio_rdma_pd *vpd = to_vpd(pd);
 	struct ib_device *ibdev = pd->device;
@@ -492,11 +515,11 @@ void virtio_rdma_dealloc_pd(struct ib_pd *pd, struct ib_udata *udata)
 
 	cmd = kmalloc(sizeof(*cmd), GFP_ATOMIC);
 	if (!cmd)
-		return;
+		return -ENOMEM;
 	rsp = kmalloc(sizeof(*rsp), GFP_ATOMIC);
 	if (!rsp) {
 		kfree(rsp);
-		return;
+		return -ENOMEM;
 	}
 
 	cmd->pdn = vpd->pd_handle;
@@ -507,6 +530,7 @@ void virtio_rdma_dealloc_pd(struct ib_pd *pd, struct ib_udata *udata)
 
 	kfree(cmd);
 	kfree(rsp);
+	return 0;
 }
 
 struct ib_mr *virtio_rdma_get_dma_mr(struct ib_pd *pd, int flags)
@@ -563,8 +587,8 @@ struct ib_mr *virtio_rdma_get_dma_mr(struct ib_pd *pd, int flags)
 	return &mr->ibmr;
 }
 
-struct ib_mr *virtio_rdma_alloc_mr(struct ib_pd *pd, enum ib_mr_type mr_type,
-				   u32 max_num_sg, struct ib_udata *udata)
+static struct ib_mr *virtio_rdma_alloc_mr(struct ib_pd *pd, enum ib_mr_type mr_type,
+				   u32 max_num_sg)
 {
 	struct virtio_rdma_dev *dev = to_vdev(pd->device);
 	struct virtio_rdma_pd *vpd = to_vpd(pd);
@@ -733,7 +757,7 @@ struct ib_mr *virtio_rdma_reg_user_mr(struct ib_pd *pd, u64 start, u64 length,
 	if (!cmd)
 		goto err_rsp;
 
-	umem = ib_umem_get(udata, start, length, access_flags, 0);
+	umem = ib_umem_get(pd->device, start, length, access_flags);
 	if (IS_ERR(umem)) {
 		pr_err("could not get umem for mem region\n");
 		ret = ERR_CAST(umem);
@@ -985,7 +1009,7 @@ int virtio_rdma_destroy_qp(struct ib_qp *ibqp, struct ib_udata *udata)
 	return rc;
 }
 
-int virtio_rdma_query_gid(struct ib_device *ibdev, u8 port, int index,
+int virtio_rdma_query_gid(struct ib_device *ibdev, u32 port, int index,
 			  union ib_gid *gid)
 {
 	struct scatterlist in, *data;
@@ -1075,7 +1099,7 @@ out:
 	return rc;
 }
 
-void virtio_rdma_dealloc_ucontext(struct ib_ucontext *ibcontext)
+static void virtio_rdma_dealloc_ucontext(struct ib_ucontext *ibcontext)
 {
 	struct scatterlist in, out;
 	struct cmd_dealloc_uc *cmd;
@@ -1103,20 +1127,20 @@ void virtio_rdma_dealloc_ucontext(struct ib_ucontext *ibcontext)
 	kfree(cmd);
 }
 
-int virtio_rdma_create_ah(struct ib_ah *ibah,
-				    struct rdma_ah_attr *ah_attr, u32 flags,
+static int virtio_rdma_create_ah(struct ib_ah *ibah,
+				    struct rdma_ah_init_attr *init_attr,
 				    struct ib_udata *udata)
 {
 	struct virtio_rdma_dev *vdev = to_vdev(ibah->device);
 	struct virtio_rdma_ah *ah = to_vah(ibah);
 	const struct ib_global_route *grh;
-	u8 port_num = rdma_ah_get_port_num(ah_attr);
+	u32 port_num = rdma_ah_get_port_num(init_attr->ah_attr);
 
-	if (!(rdma_ah_get_ah_flags(ah_attr) & IB_AH_GRH))
+	if (!(rdma_ah_get_ah_flags(init_attr->ah_attr) & IB_AH_GRH))
 		return -EINVAL;
 
-	grh = rdma_ah_read_grh(ah_attr);
-	if ((ah_attr->type != RDMA_AH_ATTR_TYPE_ROCE)  ||
+	grh = rdma_ah_read_grh(init_attr->ah_attr);
+	if ((init_attr->ah_attr->type != RDMA_AH_ATTR_TYPE_ROCE)  ||
 	    rdma_is_multicast_addr((struct in6_addr *)grh->dgid.raw))
 		return -EINVAL;
 
@@ -1124,24 +1148,26 @@ int virtio_rdma_create_ah(struct ib_ah *ibah,
 		return -ENOMEM;
 
 	ah->av.port_pd = to_vpd(ibah->pd)->pd_handle | (port_num << 24);
-	ah->av.src_path_bits = rdma_ah_get_path_bits(ah_attr);
+	ah->av.src_path_bits = rdma_ah_get_path_bits(init_attr->ah_attr);
 	ah->av.src_path_bits |= 0x80;
 	ah->av.gid_index = grh->sgid_index;
 	ah->av.hop_limit = grh->hop_limit;
 	ah->av.sl_tclass_flowlabel = (grh->traffic_class << 20) |
 				      grh->flow_label;
 	memcpy(ah->av.dgid, grh->dgid.raw, 16);
-	memcpy(ah->av.dmac, ah_attr->roce.dmac, ETH_ALEN);
+	memcpy(ah->av.dmac, init_attr->ah_attr->roce.dmac, ETH_ALEN);
 
 	return 0;
 }
 
-void virtio_rdma_destroy_ah(struct ib_ah *ah, u32 flags)
+static int virtio_rdma_destroy_ah(struct ib_ah *ah, u32 flags)
 {
 	struct virtio_rdma_dev *vdev = to_vdev(ah->device);
 
 	printk("%s:\n", __func__);
 	atomic_dec(&vdev->num_ah);
+
+	return 0;
 }
 
 static void virtio_rdma_get_fw_ver_str(struct ib_device *device, char *str)
@@ -1149,8 +1175,8 @@ static void virtio_rdma_get_fw_ver_str(struct ib_device *device, char *str)
 	snprintf(str, IB_FW_VERSION_NAME_MAX, "%d.%d.%d\n", 1, 0, 0);
 }
 
-enum rdma_link_layer virtio_rdma_port_link_layer(struct ib_device *ibdev,
-						 u8 port)
+static enum rdma_link_layer virtio_rdma_port_link_layer(struct ib_device *ibdev,
+						 u32 port)
 {
 	return IB_LINK_LAYER_ETHERNET;
 }
@@ -1162,7 +1188,7 @@ int virtio_rdma_mmap(struct ib_ucontext *ibcontext, struct vm_area_struct *vma)
 	return 0;
 }
 
-int virtio_rdma_modify_port(struct ib_device *ibdev, u8 port, int mask,
+static int virtio_rdma_modify_port(struct ib_device *ibdev, u32 port, int mask,
 			    struct ib_port_modify *props)
 {
 	struct ib_port_attr attr;
@@ -1328,7 +1354,7 @@ out:
 }
 
 /* This verb is relevant only for InfiniBand */
-int virtio_rdma_query_pkey(struct ib_device *ibdev, u8 port, u16 index,
+int virtio_rdma_query_pkey(struct ib_device *ibdev, u32 port, u16 index,
 			   u16 *pkey)
 {
 	struct scatterlist in, out;
@@ -1580,6 +1606,38 @@ int virtio_rdma_req_notify_cq(struct ib_cq *ibcq,
 	return 0;
 }
 
+static ssize_t hca_type_show(struct device *device,
+			     struct device_attribute *attr, char *buf)
+{
+	return sprintf(buf, "VIRTIO-RDMA-%s\n", VIRTIO_RDMA_DRIVER_VER);
+}
+static DEVICE_ATTR_RO(hca_type);
+
+static ssize_t hw_rev_show(struct device *device,
+			   struct device_attribute *attr, char *buf)
+{
+	return sprintf(buf, "%d\n", VIRTIO_RDMA_HW_REV);
+}
+static DEVICE_ATTR_RO(hw_rev);
+
+static ssize_t board_id_show(struct device *device,
+			     struct device_attribute *attr, char *buf)
+{
+	return sprintf(buf, "%d\n", VIRTIO_RDMA_BOARD_ID);
+}
+static DEVICE_ATTR_RO(board_id);
+
+static struct attribute *virtio_rdma_class_attributes[] = {
+	&dev_attr_hw_rev.attr,
+	&dev_attr_hca_type.attr,
+	&dev_attr_board_id.attr,
+	NULL,
+};
+
+static const struct attribute_group virtio_rdma_attr_group = {
+	.attrs = virtio_rdma_class_attributes,
+};
+
 static const struct ib_device_ops virtio_rdma_dev_ops = {
 	.owner = THIS_MODULE,
 	.driver_id = RDMA_DRIVER_VIRTIO,
@@ -1619,43 +1677,13 @@ static const struct ib_device_ops virtio_rdma_dev_ops = {
 	.reg_user_mr = virtio_rdma_reg_user_mr,
 	.req_notify_cq = virtio_rdma_req_notify_cq,
 
+	.device_group = &virtio_rdma_attr_group,
+
 	INIT_RDMA_OBJ_SIZE(ib_ah, virtio_rdma_ah, ibah),
 	INIT_RDMA_OBJ_SIZE(ib_cq, virtio_rdma_cq, ibcq),
 	INIT_RDMA_OBJ_SIZE(ib_pd, virtio_rdma_pd, ibpd),
 	// INIT_RDMA_OBJ_SIZE(ib_srq, virtio_rdma_srq, base_srq),
 	INIT_RDMA_OBJ_SIZE(ib_ucontext, virtio_rdma_ucontext, ibucontext),
-};
-
-static ssize_t hca_type_show(struct device *device,
-			     struct device_attribute *attr, char *buf)
-{
-	return sprintf(buf, "VRDMA-%s\n", VIRTIO_RDMA_DRIVER_VER);
-}
-static DEVICE_ATTR_RO(hca_type);
-
-static ssize_t hw_rev_show(struct device *device,
-			   struct device_attribute *attr, char *buf)
-{
-	return sprintf(buf, "%d\n", VIRTIO_RDMA_HW_REV);
-}
-static DEVICE_ATTR_RO(hw_rev);
-
-static ssize_t board_id_show(struct device *device,
-			     struct device_attribute *attr, char *buf)
-{
-	return sprintf(buf, "%d\n", VIRTIO_RDMA_BOARD_ID);
-}
-static DEVICE_ATTR_RO(board_id);
-
-static struct attribute *virtio_rdma_class_attributes[] = {
-	&dev_attr_hw_rev.attr,
-	&dev_attr_hca_type.attr,
-	&dev_attr_board_id.attr,
-	NULL,
-};
-
-static const struct attribute_group virtio_rdma_attr_group = {
-	.attrs = virtio_rdma_class_attributes,
 };
 
 int virtio_rdma_register_ib_device(struct virtio_rdma_dev *ri)
@@ -1664,8 +1692,6 @@ int virtio_rdma_register_ib_device(struct virtio_rdma_dev *ri)
 	struct ib_device *dev =  &ri->ib_dev;
 
 	strlcpy(dev->node_desc, "VirtIO RDMA", sizeof(dev->node_desc));
-
-	dev->dev.dma_ops = &dma_virt_ops;
 
 	dev->num_comp_vectors = 1;
 	dev->dev.parent = ri->vdev->dev.parent;
@@ -1681,9 +1707,8 @@ int virtio_rdma_register_ib_device(struct virtio_rdma_dev *ri)
 
     ib_set_device_ops(dev, &virtio_rdma_dev_ops);
 	ib_device_set_netdev(dev, ri->netdev, 1);
-	rdma_set_device_sysfs_group(dev, &virtio_rdma_attr_group);
 
-	rc = ib_register_device(dev, "virtio_rdma%d");
+	rc = ib_register_device(dev, "virtio_rdma%d", NULL);
 
 	memcpy(&dev->node_guid, dev->name, 6);
 	return rc;

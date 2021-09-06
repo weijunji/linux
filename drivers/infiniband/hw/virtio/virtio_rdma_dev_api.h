@@ -76,7 +76,7 @@ const char* cmd_name[] = {
 };
 
 struct cmd_query_port {
-	__u8 port;
+	__u32 port;
 };
 
 struct cmd_create_cq {
@@ -207,7 +207,7 @@ struct rsp_query_qp {
 };
 
 struct cmd_query_gid {
-    __u8 port;
+    __u32 port;
 	__u32 index;
 };
 
@@ -228,7 +228,7 @@ struct rsp_dealloc_uc {
 };
 
 struct cmd_query_pkey {
-	__u8 port;
+	__u32 port;
 	__u16 index;
 };
 

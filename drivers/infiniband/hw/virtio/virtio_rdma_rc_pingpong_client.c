@@ -283,13 +283,15 @@ static int __init rdma_test_init(void) {
         return -EIO;
     }
 
-    addr_send = ib_dma_alloc_coherent(ib_dev, PAGE_SIZE * PAGES, &dma_addr, GFP_KERNEL);
+    addr_send = kmalloc(PAGE_SIZE * PAGES, GFP_KERNEL);
+    dma_addr = ib_dma_map_single(ib_dev, addr_send, PAGE_SIZE * PAGES, DMA_TO_DEVICE);
     memset((char*)addr_send, '?', 4096 * PAGES);
     sg_dma_address(&sg) = dma_addr;
 	sg_dma_len(&sg) = PAGE_SIZE * PAGES;
     ib_map_mr_sg(mr, &sg, 1, NULL, PAGE_SIZE);
 
-    addr_recv = ib_dma_alloc_coherent(ib_dev, PAGE_SIZE * PAGES, &dma_addr_recv, GFP_KERNEL);
+    addr_recv = kmalloc(PAGE_SIZE * PAGES, GFP_KERNEL);
+    dma_addr_recv = ib_dma_map_single(ib_dev, addr_recv, PAGE_SIZE * PAGES, DMA_TO_DEVICE);
     sg_dma_address(&sgr) = dma_addr_recv;
 	sg_dma_len(&sgr) = PAGE_SIZE * PAGES;
     ib_map_mr_sg(mr_recv, &sgr, 1, NULL, PAGE_SIZE);
@@ -358,7 +360,6 @@ static int __init rdma_test_init(void) {
 		pr_err("query port failed");
     my_dest.lid = port_attr.lid;
 
-    // TODO: fix rdma_query_gid
     if (rdma_query_gid(ib_dev, 1, 1, &my_dest.gid))
         pr_err("query gid failed");
 

@@ -32,37 +32,37 @@ static void rdma_ctrl_ack(struct virtqueue *vq)
 }
 */
 struct virtio_rdma_config {
-    int32_t max_cq;
+    __u32 max_cq;
+	__u32 max_srq;
+	__u64 max_qp;
 };
 
 int init_device(struct virtio_rdma_dev *dev)
 {
-	int rc = -ENOMEM, i, cur_vq = 1, total_vqs = 1; // first for ctrl_vq
+	int rc = -ENOMEM;
+	int64_t i, cur_vq = 1, total_vqs = 1; // first for ctrl_vq
 	struct virtqueue **vqs;
 	vq_callback_t **cbs;
 	const char **names;
-	int max_cq, max_qp;
+	uint32_t max_cq;
+	uint64_t max_qp;
 
 	// init cq virtqueue
 	virtio_cread(dev->vdev, struct virtio_rdma_config, max_cq, &max_cq);
-	max_cq = 64; // TODO: remove this, qemu only support 1024 virtqueue
+	virtio_cread(dev->vdev, struct virtio_rdma_config, max_qp, &max_qp);
 	dev->ib_dev.attrs.max_cq = max_cq;
-	dev->ib_dev.attrs.max_qp = 64; // TODO: read from host
+	dev->ib_dev.attrs.max_qp = max_qp;
 	dev->ib_dev.attrs.max_ah = 64; // TODO: read from host
 	dev->ib_dev.attrs.max_cqe = 64; // TODO: read from host, size of virtqueue
 	pr_info("Device max cq %d\n", dev->ib_dev.attrs.max_cq);
+
 	total_vqs += max_cq;
+	total_vqs += max_qp * 2;
 
 	dev->cq_vqs = kcalloc(max_cq, sizeof(*dev->cq_vqs), GFP_ATOMIC);
 	dev->cqs = kcalloc(max_cq, sizeof(*dev->cqs), GFP_ATOMIC);
 
-	// init qp virtqueue
-	max_qp = 64; // TODO: read max qp from device
-	dev->ib_dev.attrs.max_qp = max_qp;
-	total_vqs += max_qp * 2;
-
 	dev->qp_vqs = kcalloc(max_qp * 2, sizeof(*dev->qp_vqs), GFP_ATOMIC);
-
 	dev->qp_vq_using = kzalloc(max_qp * sizeof(*dev->qp_vq_using), GFP_ATOMIC);
 	for (i = 0; i < max_qp; i++) {
 		dev->qp_vq_using[i] = -1;
@@ -86,16 +86,16 @@ int init_device(struct virtio_rdma_dev *dev)
 	cbs[0] = NULL;
 
 	for (i = 0; i < max_cq; i++, cur_vq++) {
-		sprintf(dev->cq_vqs[i].name, "cq.%d", i);
+		sprintf(dev->cq_vqs[i].name, "cq.%lld", i);
 		names[cur_vq] = dev->cq_vqs[i].name;
 		cbs[cur_vq] = virtio_rdma_cq_ack;
 	}
 
 	for (i = 0; i < max_qp * 2; i += 2, cur_vq += 2) {
-		sprintf(dev->cq_vqs[i].name, "wqp.%d", i);
-		sprintf(dev->cq_vqs[i+1].name, "rqp.%d", i);
-		names[cur_vq] = dev->cq_vqs[i].name;
-		names[cur_vq+1] = dev->cq_vqs[i+1].name;
+		sprintf(dev->qp_vqs[i].name, "sqp.%lld", i);
+		sprintf(dev->qp_vqs[i+1].name, "rqp.%lld", i);
+		names[cur_vq] = dev->qp_vqs[i].name;
+		names[cur_vq+1] = dev->qp_vqs[i+1].name;
 		cbs[cur_vq] = NULL;
 		cbs[cur_vq+1] = NULL;
 	}
