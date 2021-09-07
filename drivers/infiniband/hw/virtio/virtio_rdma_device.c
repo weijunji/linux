@@ -21,6 +21,7 @@
 #include <linux/virtio_config.h>
 
 #include "virtio_rdma.h"
+#include "virtio_rdma_dev_api.h"
 /*
 static void rdma_ctrl_ack(struct virtqueue *vq)
 {
@@ -39,17 +40,12 @@ int init_device(struct virtio_rdma_dev *dev)
 	struct virtqueue **vqs;
 	vq_callback_t **cbs;
 	const char **names;
-	uint32_t max_cq;
-	uint32_t max_qp;
+	uint32_t max_cq, max_srq, max_qp;
 
 	// init cq virtqueue
 	virtio_cread(dev->vdev, struct virtio_rdma_config, max_cq, &max_cq);
 	virtio_cread(dev->vdev, struct virtio_rdma_config, max_qp, &max_qp);
-	dev->ib_dev.attrs.max_cq = max_cq;
-	dev->ib_dev.attrs.max_qp = max_qp;
-	dev->ib_dev.attrs.max_ah = 64; // TODO: read from host
-	dev->ib_dev.attrs.max_cqe = 64; // TODO: read from host, size of virtqueue
-	pr_info("Device max cq %d\n", dev->ib_dev.attrs.max_cq);
+	virtio_cread(dev->vdev, struct virtio_rdma_config, max_srq, &max_srq);
 
 	total_vqs += max_cq;
 	total_vqs += max_qp * 2;

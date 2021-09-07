@@ -29,6 +29,8 @@
 
 struct virtio_rdma_dev {
 	struct ib_device ib_dev;
+	struct ib_device_attr	attr;
+
 	struct virtio_device *vdev;
 	struct virtqueue *ctrl_vq;
 

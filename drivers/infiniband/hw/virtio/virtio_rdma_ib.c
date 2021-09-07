@@ -34,6 +34,27 @@
 
 #include "../../core/core_priv.h"
 
+static const char* cmd_name[] = {
+	[VIRTIO_CMD_QUERY_DEVICE] = "VIRTIO_CMD_QUERY_DEVICE",
+	[VIRTIO_CMD_QUERY_PORT] = "VIRTIO_CMD_QUERY_PORT",
+	[VIRTIO_CMD_CREATE_CQ] = "VIRTIO_CMD_CREATE_CQ",
+	[VIRTIO_CMD_DESTROY_CQ] = "VIRTIO_CMD_DESTROY_CQ",
+	[VIRTIO_CMD_CREATE_PD] = "VIRTIO_CMD_CREATE_PD",
+	[VIRTIO_CMD_DESTROY_PD] = "VIRTIO_CMD_DESTROY_PD",
+	[VIRTIO_CMD_GET_DMA_MR] = "VIRTIO_CMD_GET_DMA_MR",
+	[VIRTIO_CMD_CREATE_MR] = "VIRTIO_CMD_CREATE_MR",
+	[VIRTIO_CMD_MAP_MR_SG] = "VIRTIO_CMD_MAP_MR_SG",
+	[VIRTIO_CMD_REG_USER_MR] = "VIRTIO_CMD_REG_USER_MR",
+	[VIRTIO_CMD_DEREG_MR] = "VIRTIO_CMD_DEREG_MR",
+	[VIRTIO_CMD_CREATE_QP] = "VIRTIO_CMD_CREATE_QP",
+    [VIRTIO_CMD_MODIFY_QP] = "VIRTIO_CMD_MODIFY_QP",
+    [VIRTIO_CMD_DESTROY_QP] = "VIRTIO_CMD_DESTROY_QP",
+	[VIRTIO_CMD_QUERY_GID] = "VIRTIO_CMD_QUERY_GID",
+	[VIRTIO_CMD_CREATE_UC] = "VIRTIO_CMD_CREATE_UC",
+	[VIRTIO_CMD_DEALLOC_UC] = "VIRTIO_CMD_DEALLOC_UC",
+	[VIRTIO_CMD_QUERY_PKEY] = "VIRTIO_CMD_QUERY_PKEY",
+};
+
 static void ib_qp_cap_to_virtio_rdma(struct virtio_rdma_qp_cap *dst, const struct ib_qp_cap *src)
 {
 	dst->max_send_wr = src->max_send_wr;
@@ -200,36 +221,73 @@ static int virtio_rdma_port_immutable(struct ib_device *ibdev, u32 port_num,
 	return 0;
 }
 
+static int virtio_rdma_init_device_attr(struct virtio_rdma_dev *rdev)
+{
+	struct scatterlist* data;
+	struct virtio_rdma_device_attr attr;
+	int rc;
+
+	data = init_sg(&attr, sizeof(attr));
+	if (!data)
+		return -ENOMEM;
+
+	rc = virtio_rdma_exec_cmd(rdev, VIRTIO_CMD_QUERY_DEVICE, NULL, data);
+	
+	if (rc)
+		return -EIO;
+
+	memset(&rdev->attr, 0, sizeof(rdev->attr));
+	rdev->attr.sys_image_guid = attr.sys_image_guid;
+    rdev->attr.vendor_id = attr.vendor_id;
+    rdev->attr.vendor_part_id = attr.vendor_part_id;
+    rdev->attr.hw_ver = attr.hw_ver;
+    rdev->attr.max_mr_size = attr.max_mr_size;
+    rdev->attr.page_size_cap = attr.page_size_cap;
+    rdev->attr.max_qp = attr.max_qp;
+    rdev->attr.max_qp_wr = attr.max_qp_wr;
+    rdev->attr.device_cap_flags = attr.device_cap_flags;
+    rdev->attr.max_send_sge = attr.max_send_sge;
+    rdev->attr.max_recv_sge = attr.max_recv_sge;
+    rdev->attr.max_sge_rd = attr.max_sge_rd;
+    rdev->attr.max_cq = attr.max_cq;
+    rdev->attr.max_cqe = attr.max_cqe;
+    rdev->attr.max_mr = attr.max_mr;
+    rdev->attr.max_pd = attr.max_pd;
+    rdev->attr.max_qp_rd_atom = attr.max_qp_rd_atom;
+    rdev->attr.max_ee_rd_atom = attr.max_ee_rd_atom;
+    rdev->attr.max_res_rd_atom = attr.max_res_rd_atom;
+    rdev->attr.max_qp_init_rd_atom = attr.max_qp_init_rd_atom;
+    rdev->attr.max_ee_init_rd_atom = attr.max_ee_init_rd_atom;
+    rdev->attr.atomic_cap = virtio_rdma_atomic_cap_to_ib(attr.atomic_cap);
+    rdev->attr.masked_atomic_cap = virtio_rdma_atomic_cap_to_ib(attr.masked_atomic_cap);
+    rdev->attr.max_ee = attr.max_ee;
+    rdev->attr.max_rdd = attr.max_rdd;
+    rdev->attr.max_mw = attr.max_mw;
+    rdev->attr.max_mcast_grp = attr.max_mcast_grp;
+    rdev->attr.max_mcast_qp_attach = attr.max_mcast_qp_attach;
+    rdev->attr.max_total_mcast_qp_attach = attr.max_total_mcast_qp_attach;
+    rdev->attr.max_ah = attr.max_ah;
+    rdev->attr.max_srq = attr.max_srq;
+    rdev->attr.max_srq_wr = attr.max_srq_wr;
+    rdev->attr.max_srq_sge = attr.max_srq_sge;
+    rdev->attr.max_fast_reg_page_list_len = attr.max_fast_reg_page_list_len;
+    rdev->attr.max_pi_fast_reg_page_list_len = attr.max_pi_fast_reg_page_list_len;
+    rdev->attr.max_pkeys = attr.max_pkeys;
+    rdev->attr.local_ca_ack_delay = attr.local_ca_ack_delay;
+
+	kfree(data);
+	return rc;
+}
+
 static int virtio_rdma_query_device(struct ib_device *ibdev,
 				    struct ib_device_attr *props,
 				    struct ib_udata *uhw)
 {
-	struct scatterlist* data;
-	int offs;
-	int rc;
-
 	if (uhw->inlen || uhw->outlen)
 		return -EINVAL;
 
-	/* We start with sys_image_guid because of inconsistency beween ib_
-	 * and ibv_ */
-	offs = offsetof(struct ib_device_attr, sys_image_guid);
-
-	data = init_sg((void *)props + offs, sizeof(*props) - offs);
-	if (!data)
-		return -ENOMEM;
-
-	rc = virtio_rdma_exec_cmd(to_vdev(ibdev), VIRTIO_CMD_QUERY_DEVICE, NULL,
-				  data);
-
-	// TODO: more attrs
-	props->max_cq = ibdev->attrs.max_cq;
-	props->max_cqe = ibdev->attrs.max_cqe;
-	props->max_qp = ibdev->attrs.max_qp;
-	props->max_srq = ibdev->attrs.max_srq;
-
-	kfree(data);
-	return rc;
+	*props = to_vdev(ibdev)->attr;
+	return 0;
 }
 
 static int virtio_rdma_query_port(struct ib_device *ibdev, u32 port,
@@ -238,7 +296,6 @@ static int virtio_rdma_query_port(struct ib_device *ibdev, u32 port,
 	struct scatterlist in, *out;
 	struct cmd_query_port *cmd;
 	struct virtio_rdma_port_attr port_attr;
-	int offs;
 	int rc;
 
 	cmd = kmalloc(sizeof(*cmd), GFP_ATOMIC);
@@ -1692,6 +1749,8 @@ int virtio_rdma_register_ib_device(struct virtio_rdma_dev *ri)
 {
 	int rc;
 	struct ib_device *dev =  &ri->ib_dev;
+
+	virtio_rdma_init_device_attr(ri);
 
 	strlcpy(dev->node_desc, "VirtIO RDMA", sizeof(dev->node_desc));
 
