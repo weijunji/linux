@@ -31,11 +31,6 @@ static void rdma_ctrl_ack(struct virtqueue *vq)
 	printk("%s\n", __func__);
 }
 */
-struct virtio_rdma_config {
-    __u32 max_cq;
-	__u32 max_srq;
-	__u64 max_qp;
-};
 
 int init_device(struct virtio_rdma_dev *dev)
 {
@@ -45,7 +40,7 @@ int init_device(struct virtio_rdma_dev *dev)
 	vq_callback_t **cbs;
 	const char **names;
 	uint32_t max_cq;
-	uint64_t max_qp;
+	uint32_t max_qp;
 
 	// init cq virtqueue
 	virtio_cread(dev->vdev, struct virtio_rdma_config, max_cq, &max_cq);

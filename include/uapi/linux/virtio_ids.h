@@ -55,8 +55,8 @@
 #define VIRTIO_ID_FS			26 /* virtio filesystem */
 #define VIRTIO_ID_PMEM			27 /* virtio pmem */
 #define VIRTIO_ID_MAC80211_HWSIM	29 /* virtio mac80211-hwsim */
-#define VIRTIO_ID_RDMA          30 /* virtio rdma */
 #define VIRTIO_ID_BT			40 /* virtio bluetooth */
+#define VIRTIO_ID_RDMA          42 /* virtio rdma */
 
 /*
  * Virtio Transitional IDs

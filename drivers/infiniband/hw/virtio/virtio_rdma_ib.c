@@ -225,6 +225,8 @@ static int virtio_rdma_query_device(struct ib_device *ibdev,
 	// TODO: more attrs
 	props->max_cq = ibdev->attrs.max_cq;
 	props->max_cqe = ibdev->attrs.max_cqe;
+	props->max_qp = ibdev->attrs.max_qp;
+	props->max_srq = ibdev->attrs.max_srq;
 
 	kfree(data);
 	return rc;

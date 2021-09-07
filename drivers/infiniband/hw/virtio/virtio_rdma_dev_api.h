@@ -24,6 +24,12 @@
 #include <linux/types.h>
 #include <rdma/ib_verbs.h>
 
+struct virtio_rdma_config {
+    __u32 max_cq;
+	__u32 max_srq;
+	__u32 max_qp;
+} __attribute__((packed));
+
 #define VIRTIO_RDMA_CTRL_OK	0
 #define VIRTIO_RDMA_CTRL_ERR	1
 
