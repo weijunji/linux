@@ -193,12 +193,7 @@ struct virtio_rdma_qp {
 	u8 port;
 
 	struct virtio_rdma_vq *sq;
-	int s_status;
-	struct cmd_post_send *s_cmd;
-
 	struct virtio_rdma_vq *rq;
-	int r_status;
-	struct cmd_post_recv *r_cmd;
 };
 
 struct virtio_rdma_global_route {
@@ -284,8 +279,6 @@ struct virtio_rdma_ah {
 	struct ib_ah ibah;
 	struct virtio_rdma_av av;
 };
-
-void virtio_rdma_cq_ack(struct virtqueue *vq);
 
 static inline struct virtio_rdma_ah *to_vah(struct ib_ah *ibah)
 {

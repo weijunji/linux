@@ -22,16 +22,7 @@
 
 #include "virtio_rdma.h"
 #include "virtio_rdma_dev_api.h"
-/*
-static void rdma_ctrl_ack(struct virtqueue *vq)
-{
-	struct virtio_rdma_dev *dev = vq->vdev->priv;
-
-	wake_up(&dev->acked);
-
-	printk("%s\n", __func__);
-}
-*/
+#include "virtio_rdma_queue.h"
 
 int init_device(struct virtio_rdma_dev *dev)
 {
