@@ -100,7 +100,7 @@ static void virtio_rdma_remove(struct virtio_device *vdev)
 
 	vdev->priv = NULL;
 
-	fini_ib(ri);
+	virtio_rdma_unregister_ib_device(ri);
 
 	fini_netdev(ri);
 

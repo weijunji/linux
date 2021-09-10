@@ -24,6 +24,52 @@
 #include "virtio_rdma_dev_api.h"
 #include "virtio_rdma_queue.h"
 
+static void init_device_attr (struct virtio_rdma_dev *rdev)
+{
+	uint32_t atomic_cap;
+
+	virtio_cread(rdev->vdev, struct virtio_rdma_config, phys_port_cnt, &rdev->ib_dev.phys_port_cnt);
+
+	memset(&rdev->attr, 0, sizeof(rdev->attr));
+	virtio_cread_le(rdev->vdev, struct virtio_rdma_config, sys_image_guid, (uint64_t*)&rdev->attr.sys_image_guid);
+	virtio_cread_le(rdev->vdev, struct virtio_rdma_config, vendor_id, &rdev->attr.vendor_id);
+	virtio_cread_le(rdev->vdev, struct virtio_rdma_config, vendor_part_id, &rdev->attr.vendor_part_id);
+	virtio_cread_le(rdev->vdev, struct virtio_rdma_config, hw_ver, &rdev->attr.hw_ver);
+	virtio_cread_le(rdev->vdev, struct virtio_rdma_config, max_mr_size, &rdev->attr.max_mr_size);
+	virtio_cread_le(rdev->vdev, struct virtio_rdma_config, page_size_cap, &rdev->attr.page_size_cap);
+	virtio_cread_le(rdev->vdev, struct virtio_rdma_config, max_qp, (uint32_t*)&rdev->attr.max_qp);
+	virtio_cread_le(rdev->vdev, struct virtio_rdma_config, max_qp_wr,(uint32_t*) &rdev->attr.max_qp_wr);
+	virtio_cread_le(rdev->vdev, struct virtio_rdma_config, device_cap_flags, &rdev->attr.device_cap_flags);
+	virtio_cread_le(rdev->vdev, struct virtio_rdma_config, max_send_sge, (uint32_t*)&rdev->attr.max_send_sge);
+	virtio_cread_le(rdev->vdev, struct virtio_rdma_config, max_recv_sge, (uint32_t*)&rdev->attr.max_recv_sge);
+	virtio_cread_le(rdev->vdev, struct virtio_rdma_config, max_sge_rd, (uint32_t*)&rdev->attr.max_sge_rd);
+	virtio_cread_le(rdev->vdev, struct virtio_rdma_config, max_cq, (uint32_t*)&rdev->attr.max_cq);
+	virtio_cread_le(rdev->vdev, struct virtio_rdma_config, max_cqe, (uint32_t*)&rdev->attr.max_cqe);
+	virtio_cread_le(rdev->vdev, struct virtio_rdma_config, max_mr, (uint32_t*)&rdev->attr.max_mr);
+	virtio_cread_le(rdev->vdev, struct virtio_rdma_config, max_pd, (uint32_t*)&rdev->attr.max_pd);
+	virtio_cread_le(rdev->vdev, struct virtio_rdma_config, max_qp_rd_atom, (uint32_t*)&rdev->attr.max_qp_rd_atom);
+	virtio_cread_le(rdev->vdev, struct virtio_rdma_config, max_ee_rd_atom, (uint32_t*)&rdev->attr.max_ee_rd_atom);
+	virtio_cread_le(rdev->vdev, struct virtio_rdma_config, max_res_rd_atom, (uint32_t*)&rdev->attr.max_res_rd_atom);
+	virtio_cread_le(rdev->vdev, struct virtio_rdma_config, max_qp_init_rd_atom, (uint32_t*)&rdev->attr.max_qp_init_rd_atom);
+	virtio_cread_le(rdev->vdev, struct virtio_rdma_config, max_ee_init_rd_atom, (uint32_t*)&rdev->attr.max_ee_init_rd_atom);
+	virtio_cread_le(rdev->vdev, struct virtio_rdma_config, atomic_cap, &atomic_cap);
+	rdev->attr.atomic_cap = virtio_rdma_atomic_cap_to_ib(atomic_cap);
+	virtio_cread_le(rdev->vdev, struct virtio_rdma_config, max_ee, (uint32_t*)&rdev->attr.max_ee);
+	virtio_cread_le(rdev->vdev, struct virtio_rdma_config, max_rdd, (uint32_t*)&rdev->attr.max_rdd);
+	virtio_cread_le(rdev->vdev, struct virtio_rdma_config, max_mw, (uint32_t*)&rdev->attr.max_mw);
+	virtio_cread_le(rdev->vdev, struct virtio_rdma_config, max_mcast_grp, (uint32_t*)&rdev->attr.max_mcast_grp);
+	virtio_cread_le(rdev->vdev, struct virtio_rdma_config, max_mcast_qp_attach, (uint32_t*)&rdev->attr.max_mcast_qp_attach);
+	virtio_cread_le(rdev->vdev, struct virtio_rdma_config, max_total_mcast_qp_attach, (uint32_t*)&rdev->attr.max_total_mcast_qp_attach);
+	virtio_cread_le(rdev->vdev, struct virtio_rdma_config, max_ah, (uint32_t*)&rdev->attr.max_ah);
+	virtio_cread_le(rdev->vdev, struct virtio_rdma_config, max_srq, (uint32_t*)&rdev->attr.max_srq);
+	virtio_cread_le(rdev->vdev, struct virtio_rdma_config, max_srq_wr, (uint32_t*)&rdev->attr.max_srq_wr);
+	virtio_cread_le(rdev->vdev, struct virtio_rdma_config, max_srq_sge, (uint32_t*)&rdev->attr.max_srq_sge);
+	virtio_cread_le(rdev->vdev, struct virtio_rdma_config, max_fast_reg_page_list_len, &rdev->attr.max_fast_reg_page_list_len);
+	virtio_cread_le(rdev->vdev, struct virtio_rdma_config, max_pi_fast_reg_page_list_len, &rdev->attr.max_pi_fast_reg_page_list_len);
+	virtio_cread_le(rdev->vdev, struct virtio_rdma_config, max_pkeys, &rdev->attr.max_pkeys);
+	virtio_cread_le(rdev->vdev, struct virtio_rdma_config, local_ca_ack_delay, &rdev->attr.local_ca_ack_delay);
+}
+
 int init_device(struct virtio_rdma_dev *dev)
 {
 	int rc = -ENOMEM;
@@ -33,10 +79,11 @@ int init_device(struct virtio_rdma_dev *dev)
 	const char **names;
 	uint32_t max_cq, max_srq, max_qp;
 
-	// init cq virtqueue
-	virtio_cread(dev->vdev, struct virtio_rdma_config, max_cq, &max_cq);
-	virtio_cread(dev->vdev, struct virtio_rdma_config, max_qp, &max_qp);
-	virtio_cread(dev->vdev, struct virtio_rdma_config, max_srq, &max_srq);
+	init_device_attr(dev);
+	max_cq = dev->attr.max_cq;
+	max_qp = dev->attr.max_qp;
+	max_srq = dev->attr.max_srq;
+	pr_info("Init vq: cq %u qp %u srq %u", max_cq, max_qp, max_srq);
 
 	total_vqs += max_cq;
 	total_vqs += max_qp * 2;

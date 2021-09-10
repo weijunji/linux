@@ -1,7 +1,7 @@
 /*
  * Virtio RDMA device: Virtio communication message
  *
- * Copyright (C) 2019 Junji Wei Bytedance Inc.
+ * Copyright (C) 2021 Junji Wei Bytedance Inc.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -25,9 +25,46 @@
 #include <rdma/ib_verbs.h>
 
 struct virtio_rdma_config {
-    __u32 max_cq;
-	__u32 max_qp;
-	__u32 max_srq;
+    __le32         phys_port_cnt;
+
+    __le64         sys_image_guid;
+    __le32         vendor_id;
+    __le32         vendor_part_id;
+    __le32         hw_ver;
+    __le64         max_mr_size;
+    __le64         page_size_cap;
+    __le32         max_qp;
+    __le32         max_qp_wr;
+    __le64         device_cap_flags;
+    __le32         max_send_sge;
+    __le32         max_recv_sge;
+    __le32         max_sge_rd;
+    __le32         max_cq;
+    __le32         max_cqe;
+    __le32         max_mr;
+    __le32         max_pd;
+    __le32         max_qp_rd_atom;
+    __le32         max_ee_rd_atom;
+    __le32         max_res_rd_atom;
+    __le32         max_qp_init_rd_atom;
+    __le32         max_ee_init_rd_atom;
+    __le32         atomic_cap;
+    __le32         max_ee;
+    __le32         max_rdd;
+    __le32         max_mw;
+    __le32         max_mcast_grp;
+    __le32         max_mcast_qp_attach;
+    __le32         max_total_mcast_qp_attach;
+    __le32         max_ah;
+    __le32         max_srq;
+    __le32         max_srq_wr;
+    __le32         max_srq_sge;
+    __le32         max_fast_reg_page_list_len;
+    __le32         max_pi_fast_reg_page_list_len;
+    __le16         max_pkeys;
+	__u8           local_ca_ack_delay;
+
+    __u8           reserved[128];
 } __attribute__((packed));
 
 #define VIRTIO_RDMA_CTRL_OK	0
@@ -39,7 +76,7 @@ struct control_buf {
 };
 
 enum {
-	VIRTIO_CMD_QUERY_DEVICE = 10,
+	VIRTIO_CMD_ILLEGAL,
 	VIRTIO_CMD_QUERY_PORT,
 	VIRTIO_CMD_CREATE_CQ,
 	VIRTIO_CMD_DESTROY_CQ,

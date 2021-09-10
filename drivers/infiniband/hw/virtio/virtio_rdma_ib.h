@@ -30,13 +30,13 @@ enum virtio_rdma_type {
 	VIRTIO_RDMA_TYPE_KERNEL
 };
 
-enum virtio_rdma_atomic_cap {
+enum {
 	VIRTIO_RDMA_ATOMIC_NONE,
 	VIRTIO_RDMA_ATOMIC_HCA,
 	VIRTIO_RDMA_ATOMIC_GLOB
 };
 
-static inline enum ib_atomic_cap virtio_rdma_atomic_cap_to_ib(enum virtio_rdma_atomic_cap src) {
+static inline enum ib_atomic_cap virtio_rdma_atomic_cap_to_ib(uint32_t src) {
 	switch (src) {
 		case VIRTIO_RDMA_ATOMIC_NONE:
 			return IB_ATOMIC_NONE;
@@ -49,47 +49,6 @@ static inline enum ib_atomic_cap virtio_rdma_atomic_cap_to_ib(enum virtio_rdma_a
 	}
 	return 0;
 }
-
-struct virtio_rdma_device_attr {
-	__be64		sys_image_guid;
-	u32			vendor_id;
-	u32			vendor_part_id;
-	u32			hw_ver;
-	u64			max_mr_size;
-	u64			page_size_cap;
-	int			max_qp;
-	int			max_qp_wr;
-	u64			device_cap_flags;
-	int			max_send_sge;
-	int			max_recv_sge;
-	int			max_sge_rd;
-	int			max_cq;
-	int			max_cqe;
-	int			max_mr;
-	int			max_pd;
-	int			max_qp_rd_atom;
-	int			max_ee_rd_atom;
-	int			max_res_rd_atom;
-	int			max_qp_init_rd_atom;
-	int			max_ee_init_rd_atom;
-	enum virtio_rdma_atomic_cap	atomic_cap;
-	enum virtio_rdma_atomic_cap	masked_atomic_cap;
-	int			max_ee;
-	int			max_rdd;
-	int			max_mw;
-	int			max_mcast_grp;
-	int			max_mcast_qp_attach;
-	int			max_total_mcast_qp_attach;
-	int			max_ah;
-	int			max_srq;
-	int			max_srq_wr;
-	int			max_srq_sge;
-	unsigned int		max_fast_reg_page_list_len;
-	unsigned int		max_pi_fast_reg_page_list_len;
-	u16			max_pkeys;
-	u8			local_ca_ack_delay;
-	u8          phys_port_cnt;
-};
 
 struct virtio_rdma_port_attr {
 	enum ib_port_state	state;
@@ -311,6 +270,6 @@ static inline struct virtio_rdma_ucontext *to_vucontext(struct ib_ucontext *ibuc
 }
 
 int virtio_rdma_register_ib_device(struct virtio_rdma_dev *ri);
-void fini_ib(struct virtio_rdma_dev *ri);
+void virtio_rdma_unregister_ib_device(struct virtio_rdma_dev *ri);
 
 #endif
