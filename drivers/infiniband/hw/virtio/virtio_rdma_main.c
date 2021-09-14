@@ -72,6 +72,9 @@ static int virtio_rdma_probe(struct virtio_device *vdev)
 		goto out_fini_netdev;
 	}
 
+	spin_lock_init(&ri->pending_mmaps_lock);
+	INIT_LIST_HEAD(&ri->pending_mmaps);
+
 	pr_info("VirtIO RDMA device %d probed\n", vdev->index);
 
 	goto out;

@@ -21,6 +21,7 @@
 #ifndef __VIRTIO_RDMA__
 #define __VIRTIO_RDMA__
 
+#include <linux/types.h>
 #include <linux/spinlock.h>
 #include <linux/virtio.h>
 #include <rdma/ib_verbs.h>
@@ -50,6 +51,9 @@ struct virtio_rdma_dev {
 	atomic_t num_qp;
 	atomic_t num_cq;
 	atomic_t num_ah;
+
+	struct list_head pending_mmaps;
+	spinlock_t pending_mmaps_lock;
 
 	// only for modify_port ?
 	struct mutex port_mutex;

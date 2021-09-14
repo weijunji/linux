@@ -32,6 +32,7 @@
 #include "virtio_rdma_ib.h"
 #include "virtio_rdma_dev_api.h"
 #include "virtio_rdma_queue.h"
+#include "virtio_rdma_loc.h"
 
 #include "../../core/core_priv.h"
 
@@ -1125,13 +1126,6 @@ static enum rdma_link_layer virtio_rdma_port_link_layer(struct ib_device *ibdev,
 	return IB_LINK_LAYER_ETHERNET;
 }
 
-int virtio_rdma_mmap(struct ib_ucontext *ibcontext, struct vm_area_struct *vma)
-{
-	printk("%s:\n", __func__);
-
-	return 0;
-}
-
 static int virtio_rdma_modify_port(struct ib_device *ibdev, u32 port, int mask,
 			    struct ib_port_modify *props)
 {
@@ -1369,7 +1363,7 @@ int virtio_rdma_post_recv(struct ib_qp *ibqp, const struct ib_recv_wr *wr,
 {
 	struct scatterlist *sgs[3], hdr, status_sg;
 	struct virtio_rdma_qp *vqp = to_vqp(ibqp);
-	struct cmd_post_recv *cmd;
+	struct virtio_rdma_cmd_post_recv *cmd;
 	struct virtio_rdma_rq_data *rq_data;
 	int *status, rc = 0, inflight = 0;
 
@@ -1438,7 +1432,7 @@ int virtio_rdma_post_send(struct ib_qp *ibqp, const struct ib_send_wr *wr,
 {
 	struct scatterlist *sgs[3], hdr, status_sg;
 	struct virtio_rdma_qp *vqp = to_vqp(ibqp);
-	struct cmd_post_send *cmd;
+	struct virtio_rdma_cmd_post_send *cmd;
 	struct ib_sge dummy_sge;
 	struct virtio_rdma_sq_data *sq_data;
 	int *status, rc = 0;
@@ -1614,6 +1608,7 @@ static const struct attribute_group virtio_rdma_attr_group = {
 
 static const struct ib_device_ops virtio_rdma_dev_ops = {
 	.owner = THIS_MODULE,
+	.uverbs_abi_ver = VIRTIO_RDMA_ABI_VERSION,
 	.driver_id = RDMA_DRIVER_VIRTIO,
 
 	.get_port_immutable = virtio_rdma_port_immutable,
@@ -1670,13 +1665,9 @@ int virtio_rdma_register_ib_device(struct virtio_rdma_dev *ri)
 	dev->num_comp_vectors = 1;
 	dev->dev.parent = ri->vdev->dev.parent;
 	dev->node_type = RDMA_NODE_IB_CA;
-	dev->uverbs_cmd_mask =
-		(1ull << IB_USER_VERBS_CMD_QUERY_DEVICE)	|
-		(1ull << IB_USER_VERBS_CMD_QUERY_PORT)		|
-		(1ull << IB_USER_VERBS_CMD_CREATE_CQ)		|
-		(1ull << IB_USER_VERBS_CMD_DESTROY_CQ)		|
-		(1ull << IB_USER_VERBS_CMD_ALLOC_PD)		|
-		(1ull << IB_USER_VERBS_CMD_DEALLOC_PD);
+	dev->uverbs_cmd_mask |=
+		(1ull << IB_USER_VERBS_CMD_POST_SEND)|
+		(1ull << IB_USER_VERBS_CMD_POST_RECV);
 
     ib_set_device_ops(dev, &virtio_rdma_dev_ops);
 	ib_device_set_netdev(dev, ri->netdev, 1);

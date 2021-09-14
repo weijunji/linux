@@ -24,6 +24,8 @@
 #include <linux/types.h>
 #include <rdma/ib_verbs.h>
 
+#include <uapi/rdma/virtio_rdma_abi.h>
+
 struct virtio_rdma_config {
     __le32         phys_port_cnt;
 
@@ -258,50 +260,5 @@ struct rsp_query_pkey {
 	__u16 pkey;
 };
 
-struct cmd_post_send {
-	__u32 qpn;
-	__u32 is_kernel;
-	__u32 num_sge;
-
-	int send_flags;
-	enum ib_wr_opcode opcode;
-	__u64 wr_id;
-
-	union {
-		__be32 imm_data;
-		__u32 invalidate_rkey;
-	} ex;
-	
-	union {
-		struct {
-			__u64 remote_addr;
-			__u32 rkey;
-		} rdma;
-		struct {
-			__u64 remote_addr;
-			__u64 compare_add;
-			__u64 swap;
-			__u32 rkey;
-		} atomic;
-		struct {
-			__u32 remote_qpn;
-			__u32 remote_qkey;
-			__u32 ahn;
-		} ud;
-		struct {
-			__u32 mrn;
-			__u32 key;
-			int access;
-		} reg;
-	} wr;
-};
-
-struct cmd_post_recv {
-	__u32 qpn;
-	__u32 is_kernel;
-
-	__u32 num_sge;
-	__u64 wr_id;
-};
 
 #endif

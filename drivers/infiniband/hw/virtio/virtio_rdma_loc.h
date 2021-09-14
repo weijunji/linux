@@ -1,5 +1,5 @@
 /*
- * Virtio RDMA queue pair operation
+ * Virtio RDMA loc: local header file
  *
  * Copyright (C) 2021 Junji Wei Bytedance Inc.
  *
@@ -17,30 +17,25 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301 USA
  */
-#ifndef __VIRTIO_RDMA_QUEUE_H__
-#define __VIRTIO_RDMA_QUEUE_H__
 
-#include "virtio_rdma_ib.h"
-#include "virtio_rdma_dev_api.h"
+#ifndef __VIRTIO_RDMA_LOC_H__
+#define __VIRTIO_RDMA_LOC_H__
 
-struct scatterlist;
+#include <linux/types.h>
+#include <linux/kref.h>
 
-struct virtio_rdma_sq_data {
-    struct virtio_rdma_qp *qp;
-    struct virtio_rdma_cmd_post_send cmd;
-    struct scatterlist *sge_sg;
-    int status;
+/* virtio_rdma_mmap.c */
+struct virtio_rdma_mminfo {
+    struct list_head pending_mmaps;
+	struct ib_ucontext *context;
+	struct kref ref;
+
+	void *buf;
+    void *doorbell;
+
+	struct virtqueue *queue;
 };
 
-struct virtio_rdma_rq_data {
-    struct virtio_rdma_qp *qp;
-    struct virtio_rdma_cmd_post_recv cmd;
-    struct scatterlist *sge_sg;
-    int status;
-};
-
-void virtio_rdma_cq_ack(struct virtqueue *vq);
-int virtio_rdma_rq_free_buf (struct virtio_rdma_qp *vqp , int num);
-int virtio_rdma_sq_free_buf (struct virtio_rdma_qp *vqp , int num);
+int virtio_rdma_mmap(struct ib_ucontext *context, struct vm_area_struct *vma);
 
 #endif
