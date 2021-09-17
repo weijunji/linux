@@ -27,42 +27,66 @@
 #include "virtio_rdma.h"
 #include "virtio_rdma_loc.h"
 
-void virtio_rdma_mmap_release(struct kref *ref)
+void virtio_rdma_mmap_free(struct rdma_user_mmap_entry *rdma_entry)
 {
-	struct virtio_rdma_mminfo *ip = container_of(ref,
-					struct virtio_rdma_mminfo, ref);
-	struct virtio_rdma_dev *rxe = to_vdev(ip->context->device);
+	struct virtio_rdma_user_mmap_entry *entry = to_ventry(rdma_entry);
 
-	spin_lock_bh(&rxe->pending_mmaps_lock);
-
-	if (!list_empty(&ip->pending_mmaps))
-		list_del(&ip->pending_mmaps);
-
-	spin_unlock_bh(&rxe->pending_mmaps_lock);
-
-	kfree(ip);
+	kfree(entry);
 }
 
-static void virtio_rdma_vma_open(struct vm_area_struct *vma)
+int virtio_rdma_mmap(struct ib_ucontext *ctx, struct vm_area_struct *vma)
 {
-	struct virtio_rdma_mminfo *ip = vma->vm_private_data;
+	struct virtio_rdma_ucontext *uctx = to_vucontext(ctx);
+	size_t size = vma->vm_end - vma->vm_start;
+	struct rdma_user_mmap_entry *rdma_entry;
+	struct virtio_rdma_user_mmap_entry *entry;
+	int rc = -EINVAL;
 
-	kref_get(&ip->ref);
-}
+	pr_info("%s", __func__);
 
-static void virtio_rdma_vma_close(struct vm_area_struct *vma)
-{
-	struct virtio_rdma_mminfo *ip = vma->vm_private_data;
+	if (vma->vm_start & (PAGE_SIZE - 1)) {
+		pr_warn("mmap not page aligned\n");
+		return -EINVAL;
+	}
 
-	kref_put(&ip->ref, virtio_rdma_mmap_release);
-}
+	rdma_entry = rdma_user_mmap_entry_get(&uctx->ibucontext, vma);
+	if (!rdma_entry) {
+		pr_err("mmap lookup failed: %lu, %#zx\n", vma->vm_pgoff, size);
+		return -EINVAL;
+	}
+	entry = to_ventry(rdma_entry);
 
-static const struct vm_operations_struct virtio_rdma_vm_ops = {
-	.open = virtio_rdma_vma_open,
-	.close = virtio_rdma_vma_close,
-};
+	if (entry->type == VIRTIO_RDMA_MMAP_CQ) {
+		// TODO: remove me, only for debug
+		((char*)entry->cq_buf)[0] = 'W';
+		// FIXME: buf is not align to page?
+		rc = remap_pfn_range(vma, vma->vm_start,
+			       page_to_pfn(virt_to_page(entry->cq_buf)),
+			       vma->vm_end - vma->vm_start,
+			       vma->vm_page_prot);
+		if (rc) {
+			pr_warn("remap_pfn_range failed: %lu, %zu\n", vma->vm_pgoff,
+				size);
+			goto out;
+		}
+	} else if (entry->type == VIRTIO_RDMA_MMAP_QP) {
+		pr_info("doorbell page %u %px", virt_to_page(entry->queue->priv), entry->queue->priv);
+		rc = io_remap_pfn_range(vma, vma->vm_start,
+			       vmalloc_to_pfn(entry->queue->priv),
+			       vma->vm_end - vma->vm_start,
+			       vma->vm_page_prot);
 
-int virtio_rdma_mmap(struct ib_ucontext *context, struct vm_area_struct *vma)
-{
-    return 0;
+		if (rc) {
+			pr_warn("remap_pfn_range failed: %lu, %zu\n", vma->vm_pgoff,
+				size);
+			goto out;
+		}
+	} else {
+		pr_err("Invalid type");
+	}
+
+out:
+	rdma_user_mmap_entry_put(rdma_entry);
+
+	return rc;
 }

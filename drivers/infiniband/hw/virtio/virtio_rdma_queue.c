@@ -66,7 +66,12 @@ void virtio_rdma_cq_ack(struct virtqueue *vq)
 			vcq->cqe_put++;
 
 			notify = virtio_rdma_cq_notify_now(vcq, vcq->queue[vcq->cqe_put % vcq->num_cqe].wc_flags);
+			smp_store_mb(vcq->queue[vcq->cqe_put % vcq->num_cqe].flags, 1);
 
+			//if (vcq->queue[vcq->cqe_enqueue % vcq->num_cqe].flags) {
+				// FIXME: how to handle this err
+			//	pr_err("cq overrun");
+			//}
 			sg_init_one(&sg, &vcq->queue[vcq->cqe_enqueue % vcq->num_cqe], sizeof(*vcq->queue));
 			virtqueue_add_inbuf(vcq->vq->vq, &sg, 1, vcq, GFP_KERNEL);
 			vcq->cqe_enqueue++;

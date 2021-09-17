@@ -165,6 +165,7 @@ struct cmd_reg_user_mr {
 	__u32 access_flags;
 	__u64 start;
 	__u64 length;
+	__u64 virt_addr;
 
 	__u64 pages;
 	__u32 npages;

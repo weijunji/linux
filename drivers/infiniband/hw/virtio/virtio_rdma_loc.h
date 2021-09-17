@@ -25,17 +25,29 @@
 #include <linux/kref.h>
 
 /* virtio_rdma_mmap.c */
-struct virtio_rdma_mminfo {
-    struct list_head pending_mmaps;
-	struct ib_ucontext *context;
-	struct kref ref;
+struct virtio_rdma_user_mmap_entry {
+    struct rdma_user_mmap_entry rdma_entry;
 
-	void *buf;
-    void *doorbell;
+	#define VIRTIO_RDMA_MMAP_CQ 1
+	#define VIRTIO_RDMA_MMAP_QP 2
+	uint8_t type;
 
-	struct virtqueue *queue;
+	union {
+		struct {
+			struct virtqueue *queue;
+			void* ubuf;
+		};
+		void* cq_buf;
+	};
 };
 
+static inline struct virtio_rdma_user_mmap_entry* to_ventry
+(struct rdma_user_mmap_entry *rdma_entry) {
+	return container_of(rdma_entry, struct virtio_rdma_user_mmap_entry,
+	                    rdma_entry);
+}
+
 int virtio_rdma_mmap(struct ib_ucontext *context, struct vm_area_struct *vma);
+void virtio_rdma_mmap_free(struct rdma_user_mmap_entry *rdma_entry);
 
 #endif

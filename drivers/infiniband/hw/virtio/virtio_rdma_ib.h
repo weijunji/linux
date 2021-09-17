@@ -24,6 +24,7 @@
 #include <linux/types.h>
 
 #include <rdma/ib_verbs.h>
+#include <uapi/rdma/virtio_rdma_abi.h>
 
 enum virtio_rdma_type {
 	VIRTIO_RDMA_TYPE_USER,
@@ -103,36 +104,13 @@ struct virtio_rdma_vq {
 	int idx;
 };
 
-struct virtio_rdma_cqe {
-	uint64_t		wr_id;
-	enum ib_wc_status status;
-	enum ib_wc_opcode opcode;
-	uint32_t vendor_err;
-	uint32_t byte_len;
-	uint32_t imm_data;
-	uint32_t qp_num;
-	uint32_t src_qp;
-	int	 wc_flags;
-	uint16_t pkey_index;
-	uint16_t slid;
-	uint8_t sl;
-	uint8_t dlid_path_bits;
-};
-
-enum {
-	VIRTIO_RDMA_NOTIFY_NOT = (0),
-	VIRTIO_RDMA_NOTIFY_SOLICITED = (1 << 0),
-	VIRTIO_RDMA_NOTIFY_NEXT_COMPLETION = (1 << 1),
-	VIRTIO_RDMA_NOTIFY_MISSED_EVENTS = (1 << 2),
-	VIRTIO_RDMA_NOTIFY_ALL = VIRTIO_RDMA_NOTIFY_SOLICITED | VIRTIO_RDMA_NOTIFY_NEXT_COMPLETION |
-			                 VIRTIO_RDMA_NOTIFY_MISSED_EVENTS
-};
-
 struct virtio_rdma_cq {
 	struct ib_cq ibcq;
 	u32 cq_handle;
 
 	struct virtio_rdma_vq *vq;
+
+	struct rdma_user_mmap_entry *entry;
 
 	spinlock_t lock;
 	struct virtio_rdma_cqe *queue;
@@ -152,7 +130,14 @@ struct virtio_rdma_qp {
 	u8 port;
 
 	struct virtio_rdma_vq *sq;
+	struct eventfd_ctx *send_eventfd;
+	void* usq_buf;
+
 	struct virtio_rdma_vq *rq;
+	struct eventfd_ctx *recv_eventfd;
+	void* urq_buf;
+
+	struct virtio_rdma_user_mmap_entry* entrys;
 };
 
 struct virtio_rdma_global_route {

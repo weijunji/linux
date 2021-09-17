@@ -288,18 +288,20 @@ static int __init rdma_test_init(void) {
     memset((char*)addr_send, '?', 4096 * PAGES);
     sg_dma_address(&sg) = dma_addr;
 	sg_dma_len(&sg) = PAGE_SIZE * PAGES;
+    sg_mark_end(&sg);
     ib_map_mr_sg(mr, &sg, 1, NULL, PAGE_SIZE);
 
     addr_recv = kmalloc(PAGE_SIZE * PAGES, GFP_KERNEL);
     dma_addr_recv = ib_dma_map_single(ib_dev, addr_recv, PAGE_SIZE * PAGES, DMA_TO_DEVICE);
     sg_dma_address(&sgr) = dma_addr_recv;
 	sg_dma_len(&sgr) = PAGE_SIZE * PAGES;
+    sg_mark_end(&sgr);
     ib_map_mr_sg(mr_recv, &sgr, 1, NULL, PAGE_SIZE);
 
     memset((char*)addr_recv, 'x', 4096 * PAGES);
     strcpy((char*)addr_recv, "hello world");
-    pr_info("Before %s\n", (char*)addr_send);
-    pr_info("Before %s\n", (char*)addr_recv);
+    pr_info("Before %llx\n", addr_send[0]);
+    pr_info("Before %llx\n", addr_recv[0]);
 
     cq = ib_create_cq(ib_dev, NULL, NULL, NULL, &cq_attr);
     if (!cq) {
@@ -444,9 +446,10 @@ static int __init rdma_test_init(void) {
             return -EIO;
         }
 
+        wc_got = 0;
         do {
-            wc_got = ib_poll_cq(cq, 2, wc);
-        } while(wc_got < 1);
+            wc_got += ib_poll_cq(cq, 2, wc);
+        } while(wc_got < 2);
         wc_total += wc_got;
     }
 
@@ -457,10 +460,10 @@ static int __init rdma_test_init(void) {
 
     rt = ktime_to_us(ktime_sub(ktime_get(), t0));
     pr_info("%d iters in %lld us = %lld usec/iter\n", ITER, rt, rt / ITER);
-    pr_info("%d bytes in %lld us = %lld Mbit/sec\n", ITER * 4096 * 2, rt, (uint64_t)ITER * 62500 / rt);
+    pr_info("%d bytes in %lld us = %lld Mbit/sec\n", ITER * 4096 * 2 * PAGES, rt, (uint64_t)ITER * 62500 * PAGES / rt);
 
-    pr_info("After %s\n", (char*)addr_send);
-    pr_info("After %s\n", (char*)addr_recv);
+    pr_info("After %llx\n", addr_send[0]);
+    pr_info("After %llx\n", addr_recv[0]);
 
     ib_destroy_qp(qp);
     ib_destroy_cq(cq);
