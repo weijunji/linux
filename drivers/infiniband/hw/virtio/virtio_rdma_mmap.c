@@ -42,8 +42,6 @@ int virtio_rdma_mmap(struct ib_ucontext *ctx, struct vm_area_struct *vma)
 	struct virtio_rdma_user_mmap_entry *entry;
 	int rc = -EINVAL;
 
-	pr_info("%s", __func__);
-
 	if (vma->vm_start & (PAGE_SIZE - 1)) {
 		pr_warn("mmap not page aligned\n");
 		return -EINVAL;
@@ -70,7 +68,6 @@ int virtio_rdma_mmap(struct ib_ucontext *ctx, struct vm_area_struct *vma)
 			goto out;
 		}
 	} else if (entry->type == VIRTIO_RDMA_MMAP_QP) {
-		pr_info("doorbell page %u %px", virt_to_page(entry->queue->priv), entry->queue->priv);
 		rc = io_remap_pfn_range(vma, vma->vm_start,
 			       vmalloc_to_pfn(entry->queue->priv),
 			       vma->vm_end - vma->vm_start,

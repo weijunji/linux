@@ -1001,8 +1001,6 @@ struct ib_qp *virtio_rdma_create_qp(struct ib_pd *ibpd,
 	vqp->sq = &vdev->qp_vqs[vqn * 2];
 	vqp->rq = &vdev->qp_vqs[vqn * 2 + 1];
 
-	pr_info("doorbell addr %px %llx", vqp->sq->vq->priv, (__u64)vqp->sq->vq->priv & (PAGE_SIZE - 1));
-
 	if (udata) {
 		struct virtio_rdma_create_qp_ureq ureq = {};
 		struct virtio_rdma_create_qp_uresp uresp = {};
