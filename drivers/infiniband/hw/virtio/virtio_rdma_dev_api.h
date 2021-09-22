@@ -97,6 +97,9 @@ enum {
 	VIRTIO_CMD_CREATE_UC,
 	VIRTIO_CMD_DEALLOC_UC,
 	VIRTIO_CMD_QUERY_PKEY,
+	VIRTIO_CMD_ADD_GID,
+    VIRTIO_CMD_DEL_GID,
+    VIRTIO_CMD_REQ_NOTIFY_CQ,
 };
 
 struct cmd_query_port {
@@ -261,5 +264,13 @@ struct rsp_query_pkey {
 	__u16 pkey;
 };
 
+struct cmd_req_notify {
+	__u32 cqn;
+	__u32 flags;
+};
+
+struct rsp_req_notify {
+	__u32 status;
+};
 
 #endif

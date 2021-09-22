@@ -114,13 +114,7 @@ struct virtio_rdma_cq {
 
 	spinlock_t lock;
 	struct virtio_rdma_cqe *queue;
-	u32 cqe_enqueue;
-	u32 cqe_put;
-	u32 cqe_get;
 	u32 num_cqe;
-
-	u32 notify_flags;
-	atomic_t cqe_cnt;
 };
 
 struct virtio_rdma_qp {
@@ -130,11 +124,9 @@ struct virtio_rdma_qp {
 	u8 port;
 
 	struct virtio_rdma_vq *sq;
-	struct eventfd_ctx *send_eventfd;
 	void* usq_buf;
 
 	struct virtio_rdma_vq *rq;
-	struct eventfd_ctx *recv_eventfd;
 	void* urq_buf;
 
 	struct virtio_rdma_user_mmap_entry* entrys;

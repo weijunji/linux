@@ -18,51 +18,57 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301 USA
  */
 
-#include <linux/virtio_pci.h>
-#include <linux/pci_ids.h>
-#include <linux/virtio_ids.h>
+#include <linux/netdevice.h>
 
-#include "../../../virtio/virtio_pci_common.h"
 #include "virtio_rdma_netdev.h"
+
+struct virtio_rdma_netdev {
+	struct virtio_rdma_dev *ri;
+};
+
+netdev_tx_t dummy_xmit(struct sk_buff *skb, struct net_device *dev) {
+	return NETDEV_TX_OK;
+}
+
+static const struct net_device_ops dummy_netdev_ops = {
+	.ndo_start_xmit = dummy_xmit,
+};
 
 int init_netdev(struct virtio_rdma_dev *ri)
 {
-	struct pci_dev* pdev_net;
-	struct virtio_pci_device *vp_dev = to_vp_device(ri->vdev);
-	struct virtio_pci_device *vnet_pdev;
-	void* priv;
+	struct virtio_rdma_netdev *vrndi;
+	struct net_device *dev;
 
-	pdev_net = pci_get_slot(vp_dev->pci_dev->bus, PCI_DEVFN(PCI_SLOT(vp_dev->pci_dev->devfn), 0));
-	if (!pdev_net) {
-		pr_err("failed to find paired net device\n");
-		return -ENODEV;
+	dev = alloc_netdev(sizeof(struct virtio_rdma_netdev), "virtio_rdma%d", NET_NAME_UNKNOWN, ether_setup);
+	if (!dev) {
+		return -ENOMEM;
 	}
+	dev->netdev_ops = &dummy_netdev_ops;
+	eth_hw_addr_random(dev);
 
-	if (pdev_net->vendor != PCI_VENDOR_ID_REDHAT_QUMRANET ||
-	    pdev_net->subsystem_device != VIRTIO_ID_NET) {
-		pr_err("failed to find paired virtio-net device\n");
-		pci_dev_put(pdev_net);
-		return -ENODEV;
-	}
+	SET_NETDEV_DEV(dev, &ri->vdev->dev);
+	vrndi = netdev_priv(dev);
+	vrndi->ri = ri;
+	ri->netdev = dev;
 
-	vnet_pdev = pci_get_drvdata(pdev_net);
-	pci_dev_put(pdev_net);
-
-	priv = vnet_pdev->vdev.priv;
-	/* get netdev from virtnet_info, which is netdev->priv */
-	ri->netdev = priv - ALIGN(sizeof(struct net_device), NETDEV_ALIGN);
 	if (!ri->netdev) {
 		pr_err("failed to get backend net device\n");
 		return -ENODEV;
 	}
 	dev_hold(ri->netdev);
+
+	if (register_netdev(dev) < 0)
+		return -EIO;
+
 	return 0;
 }
 
 void fini_netdev(struct virtio_rdma_dev *ri)
 {
 	if (ri->netdev) {
+		unregister_netdev(ri->netdev);
 		dev_put(ri->netdev);
+		free_netdev(ri->netdev);
 		ri->netdev = NULL;
 	}
 }

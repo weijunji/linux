@@ -22,6 +22,7 @@
 #include <linux/vmalloc.h>
 #include <linux/mm.h>
 #include <linux/errno.h>
+#include <linux/virtio_ring.h>
 #include <rdma/uverbs_ioctl.h>
 
 #include "virtio_rdma.h"
@@ -68,10 +69,23 @@ int virtio_rdma_mmap(struct ib_ucontext *ctx, struct vm_area_struct *vma)
 			goto out;
 		}
 	} else if (entry->type == VIRTIO_RDMA_MMAP_QP) {
+		uint64_t vq_size = PAGE_ALIGN(vring_size(virtqueue_get_vring_size(entry->queue), SMP_CACHE_BYTES));
+		WARN_ON(vq_size + entry->ubuf_size + PAGE_SIZE != vma->vm_end - vma->vm_start);
+
+		// doorbell
 		rc = io_remap_pfn_range(vma, vma->vm_start,
 			       vmalloc_to_pfn(entry->queue->priv),
-			       vma->vm_end - vma->vm_start,
-			       vma->vm_page_prot);
+			       PAGE_SIZE, vma->vm_page_prot);
+
+		// vring
+		rc = remap_pfn_range(vma, vma->vm_start + PAGE_SIZE,
+			       page_to_pfn(virt_to_page((virtqueue_get_vring(entry->queue)->desc))),
+			       vq_size, vma->vm_page_prot);
+
+		// user buffer
+		rc = remap_pfn_range(vma, vma->vm_start + PAGE_SIZE + vq_size,
+			       page_to_pfn(virt_to_page(entry->ubuf)), entry->ubuf_size,
+				   vma->vm_page_prot);
 
 		if (rc) {
 			pr_warn("remap_pfn_range failed: %lu, %zu\n", vma->vm_pgoff,

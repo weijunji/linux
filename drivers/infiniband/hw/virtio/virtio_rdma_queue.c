@@ -23,106 +23,15 @@
 #include "virtio_rdma.h"
 #include "virtio_rdma_queue.h"
 
-static bool virtio_rdma_cq_notify_now(struct virtio_rdma_cq *cq, uint32_t flags)
-{
-	uint32_t cq_notify;
-
-	if (!cq->ibcq.comp_handler)
-		return false;
-
-	/* Read application shared notification state */
-	cq_notify = READ_ONCE(cq->notify_flags);
-
-	if ((cq_notify & VIRTIO_RDMA_NOTIFY_NEXT_COMPLETION) ||
-	    ((cq_notify & VIRTIO_RDMA_NOTIFY_SOLICITED) &&
-	     (flags & IB_SEND_SOLICITED))) {
-		/*
-		 * CQ notification is one-shot: Since the
-		 * current CQE causes user notification,
-		 * the CQ gets dis-aremd and must be re-aremd
-		 * by the user for a new notification.
-		 */
-		WRITE_ONCE(cq->notify_flags, VIRTIO_RDMA_NOTIFY_NOT);
-
-		return true;
-	}
-	return false;
-}
-
 void virtio_rdma_cq_ack(struct virtqueue *vq)
 {
+	struct virtio_rdma_dev *rdev;
 	struct virtio_rdma_cq *vcq;
-	struct virtio_rdma_dev *rdev = vq->vdev->priv;
-	struct scatterlist sg;
-	bool notify;
-	unsigned long flags;
-	unsigned tmp;
 
-	spin_lock_irqsave(&rdev->cq_vqs[vq->index - 1].lock, flags);
-	do {
-		virtqueue_disable_cb(vq);
-		while ((vcq = virtqueue_get_buf(vq, &tmp))) {
-			atomic_inc(&vcq->cqe_cnt);
-			vcq->cqe_put++;
+	rdev = vq->vdev->priv;
+	// vcq->vq's index is start from 1, 0 is ctrl vq
+	vcq = rdev->cqs[vq->index - 1];
 
-			notify = virtio_rdma_cq_notify_now(vcq, vcq->queue[vcq->cqe_put % vcq->num_cqe].wc_flags);
-			smp_store_mb(vcq->queue[vcq->cqe_put % vcq->num_cqe].flags, 1);
-
-			//if (vcq->queue[vcq->cqe_enqueue % vcq->num_cqe].flags) {
-				// FIXME: how to handle this err
-			//	pr_err("cq overrun");
-			//}
-			sg_init_one(&sg, &vcq->queue[vcq->cqe_enqueue % vcq->num_cqe], sizeof(*vcq->queue));
-			virtqueue_add_inbuf(vcq->vq->vq, &sg, 1, vcq, GFP_KERNEL);
-			vcq->cqe_enqueue++;
-
-			if (notify) {
-				vcq->ibcq.comp_handler(&vcq->ibcq,
-						vcq->ibcq.cq_context);
-			}
-		}
-
-		if (unlikely(virtqueue_is_broken(vq)))
-			break;
-	} while(!virtqueue_enable_cb(vq));
-	spin_unlock_irqrestore(&rdev->cq_vqs[vq->index - 1].lock, flags);
-}
-
-int virtio_rdma_rq_free_buf (struct virtio_rdma_qp *vqp , int num) {
-	struct virtio_rdma_rq_data *data;
-	unsigned len;
-
-	do {
-		while ((data = virtqueue_get_buf(vqp->rq->vq, &len)) == NULL &&
-			!virtqueue_is_broken(vqp->rq->vq))
-			cpu_relax();
-
-		if (virtqueue_is_broken(vqp->rq->vq))
-			return -EIO;
-
-		kfree(data->sge_sg);
-		kfree(data);
-		num--;
-	} while (num);
-
-	return 0;
-}
-
-int virtio_rdma_sq_free_buf (struct virtio_rdma_qp *vqp , int num) {
-	struct virtio_rdma_sq_data *data;
-	unsigned len;
-
-	do {
-		while ((data = virtqueue_get_buf(vqp->sq->vq, &len)) == NULL &&
-			!virtqueue_is_broken(vqp->sq->vq))
-			cpu_relax();
-
-		if (virtqueue_is_broken(vqp->rq->vq))
-			return -EIO;
-
-		kfree(data->sge_sg);
-		kfree(data);
-		num--;
-	} while (num);
-	return 0;
+	if (vcq && vcq->ibcq.comp_handler)
+		vcq->ibcq.comp_handler(&vcq->ibcq, vcq->ibcq.cq_context);
 }

@@ -40,7 +40,5 @@ struct virtio_rdma_rq_data {
 };
 
 void virtio_rdma_cq_ack(struct virtqueue *vq);
-int virtio_rdma_rq_free_buf (struct virtio_rdma_qp *vqp , int num);
-int virtio_rdma_sq_free_buf (struct virtio_rdma_qp *vqp , int num);
 
 #endif

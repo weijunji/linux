@@ -36,6 +36,7 @@ struct virtio_rdma_user_mmap_entry {
 		struct {
 			struct virtqueue *queue;
 			void* ubuf;
+			uint64_t ubuf_size;
 		};
 		void* cq_buf;
 	};

@@ -55,6 +55,9 @@ static const char* cmd_name[] = {
 	[VIRTIO_CMD_CREATE_UC] = "VIRTIO_CMD_CREATE_UC",
 	[VIRTIO_CMD_DEALLOC_UC] = "VIRTIO_CMD_DEALLOC_UC",
 	[VIRTIO_CMD_QUERY_PKEY] = "VIRTIO_CMD_QUERY_PKEY",
+	[VIRTIO_CMD_ADD_GID] = "VIRTIO_CMD_ADD_GID",
+	[VIRTIO_CMD_DEL_GID] = "VIRTIO_CMD_DEL_GID",
+	[VIRTIO_CMD_REQ_NOTIFY_CQ] = "VIRTIO_CMD_REQ_NOTIFY_CQ",
 };
 
 static void ib_qp_cap_to_virtio_rdma(struct virtio_rdma_qp_cap *dst, const struct ib_qp_cap *src)
@@ -117,8 +120,6 @@ void virtio_rdma_to_rdma_ah_attr(struct rdma_ah_attr *dst,
 	rdma_ah_set_static_rate(dst, src->static_rate);
 	rdma_ah_set_port_num(dst, src->port_num);
 }
-
-/* TODO: For the scope fof the RFC i'm utilizing ib*_*_attr structures */
 
 static int virtio_rdma_exec_cmd(struct virtio_rdma_dev *di, int cmd,
 				struct scatterlist *in, struct scatterlist *out)
@@ -188,7 +189,6 @@ static struct scatterlist* init_sg(void* buf, unsigned long nbytes) {
 
 		for (i = 0; i < num_page; i++)	{
 			sg_set_page(sg + i, vmalloc_to_page(buf), len, off);
-			// pr_info("sg_set_page: addr %px len %d off %d\n", vmalloc_to_page(buf), len, off);
 
 			nbytes -= len;
 			buf += len;
@@ -355,18 +355,12 @@ static int virtio_rdma_create_cq(struct ib_cq *ibcq,
 	vcq->ibcq.cqe = entries;
 	vcq->vq = &vdev->cq_vqs[rsp->cqn];
 	vcq->num_cqe = entries;
-	vcq->cqe_enqueue = 0;
-	vcq->cqe_put = 0;
-	vcq->cqe_get = 0;
-	atomic_set(&vcq->cqe_cnt, 0);
-
 	vdev->cqs[rsp->cqn] = vcq;
 
-	fill = min(entries, vdev->ib_dev.attrs.max_cqe);
-	for(i = 0; i < fill; i++) {
+	// fill = min(entries, vdev->ib_dev.attrs.max_cqe);
+	for(i = 0; i < entries; i++) {
 		sg_init_one(&sg, vcq->queue + i, sizeof(*vcq->queue));
-		virtqueue_add_inbuf(vcq->vq->vq, &sg, 1, vcq, GFP_KERNEL);
-		vcq->cqe_enqueue++;
+		virtqueue_add_inbuf(vcq->vq->vq, &sg, 1, vcq->queue + i, GFP_KERNEL);
 	}
 
 	if (udata) {
@@ -450,8 +444,9 @@ static int virtio_rdma_destroy_cq(struct ib_cq *cq, struct ib_udata *udata)
 	if (vcq->entry)
 		rdma_user_mmap_entry_remove(vcq->entry);
 
-	pr_debug("cqp_cnt %d %u %u %u\n", atomic_read(&vcq->cqe_cnt), vcq->cqe_enqueue, vcq->cqe_get, vcq->cqe_put);
+	to_vdev(cq->device)->cqs[vcq->cq_handle] = NULL;
 
+	kfree(vcq->queue);
 	kfree(cmd);
 	kfree(rsp);
 	return 0;
@@ -911,6 +906,7 @@ static void* virtio_rdma_init_mmap_entry(struct virtqueue *vq,
 	entry->type = VIRTIO_RDMA_MMAP_QP;
 	entry->queue = vq;
 	entry->ubuf = buf;
+	entry->ubuf_size = PAGE_ALIGN(buf_size);
 
 	total_size += PAGE_ALIGN(vring_size(virtqueue_get_vring_size(vq), SMP_CACHE_BYTES)) + PAGE_SIZE;
 
@@ -939,7 +935,7 @@ struct ib_qp *virtio_rdma_create_qp(struct ib_pd *ibpd,
 	int rc, vqn;
 	struct ib_qp *ret;
 
-	if (!atomic_add_unless(&vdev->num_cq, 1, vdev->ib_dev.attrs.max_qp))
+	if (!atomic_add_unless(&vdev->num_qp, 1, vdev->ib_dev.attrs.max_qp))
         return ERR_PTR(-ENOMEM);
 
 	cmd = kmalloc(sizeof(*cmd), GFP_ATOMIC);
@@ -1002,24 +998,9 @@ struct ib_qp *virtio_rdma_create_qp(struct ib_pd *ibpd,
 	vqp->rq = &vdev->qp_vqs[vqn * 2 + 1];
 
 	if (udata) {
-		struct virtio_rdma_create_qp_ureq ureq = {};
 		struct virtio_rdma_create_qp_uresp uresp = {};
 		struct virtio_rdma_ucontext *uctx = rdma_udata_to_drv_context(udata,
 			struct virtio_rdma_ucontext, ibucontext);
-
-		ib_copy_from_udata(&ureq, udata, sizeof(ureq));
-
-		vqp->send_eventfd = eventfd_ctx_fdget(ureq.send_eventfd);
-		if (!vqp->send_eventfd) {
-			pr_err("get send eventfd failed");
-			goto out_err;
-		}
-		vqp->recv_eventfd = eventfd_ctx_fdget(ureq.recv_eventfd);
-		if (!vqp->recv_eventfd) {
-			pr_err("get recv eventfd failed");
-			eventfd_ctx_put(vqp->send_eventfd);
-			goto out_err;
-		}
 
 		vqp->usq_buf = virtio_rdma_init_mmap_entry(vqp->sq->vq, &entry[0],
 				sizeof(struct virtio_rdma_cmd_post_send) +
@@ -1113,12 +1094,11 @@ int virtio_rdma_destroy_qp(struct ib_qp *ibqp, struct ib_udata *udata)
 	if (vqp->entrys) {
 		// this means qp is created for userspace,
 		// so we need to free all uverbs resources
-		eventfd_ctx_put(vqp->send_eventfd);
-		eventfd_ctx_put(vqp->recv_eventfd);
 		kfree(vqp->usq_buf);
 		kfree(vqp->urq_buf);
 		rdma_user_mmap_entry_remove(&vqp->entrys[0].rdma_entry);
 		rdma_user_mmap_entry_remove(&vqp->entrys[1].rdma_entry);
+		kfree(vqp->entrys);
 	}
 	
 	atomic_dec(&vdev->num_qp);
@@ -1508,10 +1488,15 @@ int virtio_rdma_poll_cq(struct ib_cq *ibcq, int num_entries, struct ib_wc *wc)
 	struct virtio_rdma_cqe *cqe;
 	int i = 0;
 	unsigned long flags;
+	unsigned int tmp;
+	struct scatterlist sg;
+	struct virtqueue *vq = vcq->vq->vq;
 
 	spin_lock_irqsave(&vcq->lock, flags);
-	while (i < num_entries && vcq->cqe_get < vcq->cqe_put) {
-		cqe = &vcq->queue[vcq->cqe_get % vcq->num_cqe];
+	while (i < num_entries) {
+		cqe = virtqueue_get_buf(vq, &tmp);
+		if (!cqe)
+			break;
 
 		wc[i].wr_id = cqe->wr_id;
 		wc[i].status = cqe->status;
@@ -1527,8 +1512,8 @@ int virtio_rdma_poll_cq(struct ib_cq *ibcq, int num_entries, struct ib_wc *wc)
 		wc[i].sl = cqe->sl;
 		wc[i].dlid_path_bits = cqe->dlid_path_bits;
 
-		vcq->cqe_get++;
-		smp_store_mb(cqe->flags, 0);
+		sg_init_one(&sg, cqe, sizeof(*cqe));
+		virtqueue_add_inbuf(vq, &sg, 1, cqe, GFP_KERNEL);
 		i++;
 	}
 	spin_unlock_irqrestore(&vcq->lock, flags);
@@ -1542,7 +1527,8 @@ int virtio_rdma_post_recv(struct ib_qp *ibqp, const struct ib_recv_wr *wr,
 	struct virtio_rdma_qp *vqp = to_vqp(ibqp);
 	struct virtio_rdma_cmd_post_recv *cmd;
 	struct virtio_rdma_rq_data *rq_data;
-	int *status, rc = 0, inflight = 0;
+	int *status, rc = 0, tmp;
+	void* ptr;
 
 	if (vqp->ibqp.qp_type == IB_QPT_GSI || vqp->ibqp.qp_type == IB_QPT_SMI)
 		return 0;
@@ -1551,6 +1537,10 @@ int virtio_rdma_post_recv(struct ib_qp *ibqp, const struct ib_recv_wr *wr,
 
 	// TODO: check bad wr
 	while (wr) {
+		while ((ptr = virtqueue_get_buf(vqp->rq->vq, &tmp)) != NULL) {
+			kfree(ptr);
+		}
+
 		rq_data = kzalloc(sizeof(*rq_data), GFP_ATOMIC);
 		if (!rq_data) {
 			rc = -ENOMEM;
@@ -1575,30 +1565,15 @@ int virtio_rdma_post_recv(struct ib_qp *ibqp, const struct ib_recv_wr *wr,
 
 		rc = virtqueue_add_sgs(vqp->rq->vq, sgs, 2, 1, rq_data, GFP_ATOMIC);
 		if (rc) {
-			if (rc == -ENOSPC && inflight != 0) {
-				if (unlikely(!virtqueue_kick(vqp->rq->vq)))
-					goto out;
-				if (virtio_rdma_rq_free_buf(vqp, inflight))
-					goto out;
-				else
-					inflight = 0;
-			} else {
-				goto out;
-			}
+			pr_err("post recv err %d", rc);
+			*bad_wr = wr;
+			kfree(rq_data);
+			goto out;
 		}
-		inflight++;
 		wr = wr->next;
 	}
 
-	if (unlikely(!virtqueue_kick(vqp->rq->vq))) {
-		goto out;
-	}
-	virtio_rdma_rq_free_buf(vqp, inflight);
-/*
-	while ((rq_data = virtqueue_get_buf(vqp->rq->vq, &tmp)) == NULL &&
-		!virtqueue_is_broken(vqp->rq->vq))
-		cpu_relax();
-*/
+	virtqueue_kick(vqp->rq->vq);
 out:
 	spin_unlock(&vqp->rq->lock);
 	return rc;
@@ -1614,114 +1589,117 @@ int virtio_rdma_post_send(struct ib_qp *ibqp, const struct ib_send_wr *wr,
 	struct virtio_rdma_sq_data *sq_data;
 	int *status, rc = 0;
 	unsigned tmp;
+	void* ptr;
 
 	spin_lock(&vqp->sq->lock);
 
-	if (!wr)
-		goto out;
+	while (wr) {
+		if (vqp->type == VIRTIO_RDMA_TYPE_KERNEL &&
+			wr->opcode != IB_WR_SEND && wr->opcode != IB_WR_SEND_WITH_IMM &&
+			wr->opcode != IB_WR_REG_MR &&
+			wr->opcode != IB_WR_LOCAL_INV && wr->opcode != IB_WR_SEND_WITH_INV) {
+			pr_warn("Only support op send in kernel\n");
+			rc = -EINVAL;
+			goto out;
+		}
 
-	// TODO: support more than one wr
-	// TODO: check bad wr
-	if (vqp->type == VIRTIO_RDMA_TYPE_KERNEL &&
-	    wr->opcode != IB_WR_SEND && wr->opcode != IB_WR_SEND_WITH_IMM &&
-		wr->opcode != IB_WR_REG_MR &&
-		wr->opcode != IB_WR_LOCAL_INV && wr->opcode != IB_WR_SEND_WITH_INV) {
-		pr_warn("Only support op send in kernel\n");
-		rc = -EINVAL;
-		goto out;
-	}
+		while ((ptr = virtqueue_get_buf(vqp->rq->vq, &tmp)) != NULL) {
+			kfree(ptr);
+		}
 
-	sq_data = kzalloc(sizeof(*sq_data), GFP_ATOMIC);
-	if (!sq_data) {
-		rc = -ENOMEM;
-		goto out;
-	}
+		sq_data = kzalloc(sizeof(*sq_data), GFP_ATOMIC);
+		if (!sq_data) {
+			rc = -ENOMEM;
+			goto out;
+		}
 
-	cmd = &sq_data->cmd;
-	status = &sq_data->status;
+		cmd = &sq_data->cmd;
+		status = &sq_data->status;
 
-	cmd->qpn = vqp->qp_handle;
-	cmd->is_kernel = vqp->type == VIRTIO_RDMA_TYPE_KERNEL;
-	cmd->num_sge = wr->num_sge;
-	cmd->send_flags = wr->send_flags;
-	cmd->opcode = wr->opcode;
-	cmd->wr_id = wr->wr_id;
-	cmd->ex.imm_data = wr->ex.imm_data;
-	cmd->ex.invalidate_rkey = wr->ex.invalidate_rkey;
+		cmd->qpn = vqp->qp_handle;
+		cmd->is_kernel = vqp->type == VIRTIO_RDMA_TYPE_KERNEL;
+		cmd->num_sge = wr->num_sge;
+		cmd->send_flags = wr->send_flags;
+		cmd->opcode = wr->opcode;
+		cmd->wr_id = wr->wr_id;
+		cmd->ex.imm_data = wr->ex.imm_data;
+		cmd->ex.invalidate_rkey = wr->ex.invalidate_rkey;
 
-	switch (ibqp->qp_type) {
-	case IB_QPT_GSI:
-	case IB_QPT_UD:
-		pr_err("Not support UD now\n");
-		rc = -EINVAL;
-		goto out;
-		break;
-	case IB_QPT_RC:
-		switch (wr->opcode) {
-		case IB_WR_RDMA_READ:
-		case IB_WR_RDMA_WRITE:
-		case IB_WR_RDMA_WRITE_WITH_IMM:
-			cmd->wr.rdma.remote_addr =
-				rdma_wr(wr)->remote_addr;
-			cmd->wr.rdma.rkey = rdma_wr(wr)->rkey;
+		switch (ibqp->qp_type) {
+		case IB_QPT_GSI:
+		case IB_QPT_UD:
+			pr_err("Not support UD now\n");
+			rc = -EINVAL;
+			goto out_err;
 			break;
-		case IB_WR_LOCAL_INV:
-		case IB_WR_SEND_WITH_INV:
-			cmd->ex.invalidate_rkey =
-				wr->ex.invalidate_rkey;
-			break;
-		case IB_WR_ATOMIC_CMP_AND_SWP:
-		case IB_WR_ATOMIC_FETCH_AND_ADD:
-			cmd->wr.atomic.remote_addr =
-				atomic_wr(wr)->remote_addr;
-			cmd->wr.atomic.rkey = atomic_wr(wr)->rkey;
-			cmd->wr.atomic.compare_add =
-				atomic_wr(wr)->compare_add;
-			if (wr->opcode == IB_WR_ATOMIC_CMP_AND_SWP)
-				cmd->wr.atomic.swap =
-					atomic_wr(wr)->swap;
-			break;
-		case IB_WR_REG_MR:
-			cmd->wr.reg.mrn = to_vmr(reg_wr(wr)->mr)->mr_handle;
-			cmd->wr.reg.key = reg_wr(wr)->key;
-			cmd->wr.reg.access = reg_wr(wr)->access;
+		case IB_QPT_RC:
+			switch (wr->opcode) {
+			case IB_WR_RDMA_READ:
+			case IB_WR_RDMA_WRITE:
+			case IB_WR_RDMA_WRITE_WITH_IMM:
+				cmd->wr.rdma.remote_addr =
+					rdma_wr(wr)->remote_addr;
+				cmd->wr.rdma.rkey = rdma_wr(wr)->rkey;
+				break;
+			case IB_WR_LOCAL_INV:
+			case IB_WR_SEND_WITH_INV:
+				cmd->ex.invalidate_rkey =
+					wr->ex.invalidate_rkey;
+				break;
+			case IB_WR_ATOMIC_CMP_AND_SWP:
+			case IB_WR_ATOMIC_FETCH_AND_ADD:
+				cmd->wr.atomic.remote_addr =
+					atomic_wr(wr)->remote_addr;
+				cmd->wr.atomic.rkey = atomic_wr(wr)->rkey;
+				cmd->wr.atomic.compare_add =
+					atomic_wr(wr)->compare_add;
+				if (wr->opcode == IB_WR_ATOMIC_CMP_AND_SWP)
+					cmd->wr.atomic.swap =
+						atomic_wr(wr)->swap;
+				break;
+			case IB_WR_REG_MR:
+				cmd->wr.reg.mrn = to_vmr(reg_wr(wr)->mr)->mr_handle;
+				cmd->wr.reg.key = reg_wr(wr)->key;
+				cmd->wr.reg.access = reg_wr(wr)->access;
+				break;
+			default:
+				break;
+			}
 			break;
 		default:
-			break;
+			pr_err("Bad qp type\n");
+			rc = -EINVAL;
+			goto out_err;
 		}
-		break;
-	default:
-		pr_err("Bad qp type\n");
-		rc = -EINVAL;
-		*bad_wr = wr;
-		goto out;
+
+		sg_init_one(&hdr, cmd, sizeof(*cmd));
+		sgs[0] = &hdr;
+		/* while sg_list is null, use a dummy sge to avoid 
+		* "zero sized buffers are not allowed"
+		*/
+		if (wr->sg_list)
+			sq_data->sge_sg = init_sg(wr->sg_list, sizeof(*wr->sg_list) * wr->num_sge);
+		else
+			sq_data->sge_sg = init_sg(&dummy_sge, sizeof(dummy_sge));
+		sgs[1] = sq_data->sge_sg;
+		sg_init_one(&status_sg, status, sizeof(*status));
+		sgs[2] = &status_sg;
+
+		rc = virtqueue_add_sgs(vqp->sq->vq, sgs, 2, 1, sq_data, GFP_ATOMIC);
+		if (rc) {
+			pr_err("post send err %d", rc);
+			goto out_err;
+		}
+
+		wr = wr->next;
 	}
 
-	sg_init_one(&hdr, cmd, sizeof(*cmd));
-	sgs[0] = &hdr;
-	/* while sg_list is null, use a dummy sge to avoid 
-	 * "zero sized buffers are not allowed"
-	 */
-	if (wr->sg_list)
-		sq_data->sge_sg = init_sg(wr->sg_list, sizeof(*wr->sg_list) * wr->num_sge);
-	else
-		sq_data->sge_sg = init_sg(&dummy_sge, sizeof(dummy_sge));
-	sgs[1] = sq_data->sge_sg;
-	sg_init_one(&status_sg, status, sizeof(*status));
-	sgs[2] = &status_sg;
+	virtqueue_kick(vqp->sq->vq);
+	goto out;
 
-	rc = virtqueue_add_sgs(vqp->sq->vq, sgs, 2, 1, sq_data, GFP_ATOMIC);
-	if (rc)
-		goto out;
-
-	if (unlikely(!virtqueue_kick(vqp->sq->vq))) {
-		goto out;
-	}
-
-	while (!virtqueue_get_buf(vqp->sq->vq, &tmp) &&
-	       !virtqueue_is_broken(vqp->sq->vq))
-		cpu_relax();
-
+out_err:
+	*bad_wr = wr;
+	kfree(sq_data);
 out:
 	spin_unlock(&vqp->sq->lock);
 	return rc;
@@ -1731,22 +1709,40 @@ int virtio_rdma_req_notify_cq(struct ib_cq *ibcq,
 			      enum ib_cq_notify_flags flags)
 {
 	struct virtio_rdma_cq *vcq = to_vcq(ibcq);
+	struct cmd_req_notify *cmd;
+	struct rsp_req_notify *rsp;
+	struct scatterlist in, out;
+	int rc;
 
-	if ((flags & IB_CQ_SOLICITED_MASK) == IB_CQ_SOLICITED)
-		/*
-		 * Enable CQ event for next solicited completion.
-		 * and make it visible to all associated producers.
-		 */
-		smp_store_mb(vcq->notify_flags, VIRTIO_RDMA_NOTIFY_SOLICITED);
-	else
-		/*
-		 * Enable CQ event for any signalled completion.
-		 * and make it visible to all associated producers.
-		 */
-		smp_store_mb(vcq->notify_flags, VIRTIO_RDMA_NOTIFY_ALL);
+	if (flags & IB_CQ_SOLICITED_MASK) {
+		cmd = kzalloc(sizeof(*cmd), GFP_ATOMIC);
+		if (!cmd)
+			return -ENOMEM;
+
+		rsp = kzalloc(sizeof(*rsp), GFP_ATOMIC);
+		if (!rsp) {
+			kfree(cmd);
+			return -ENOMEM;
+		}
+
+		cmd->cqn = vcq->cq_handle;
+		cmd->flags = (flags & IB_CQ_SOLICITED_MASK) == IB_CQ_SOLICITED ?
+			VIRTIO_RDMA_NOTIFY_SOLICITED : VIRTIO_RDMA_NOTIFY_NEXT_COMPLETION;
+
+		sg_init_one(&in, cmd, sizeof(*cmd));
+		sg_init_one(&out, rsp, sizeof(*rsp));
+
+		rc = virtio_rdma_exec_cmd(to_vdev(ibcq->device),
+								  VIRTIO_CMD_REQ_NOTIFY_CQ, &in, &out);
+		
+		kfree(cmd);
+		kfree(rsp);
+		if (!rc)
+			return -EIO;
+	}
 
 	if (flags & IB_CQ_REPORT_MISSED_EVENTS)
-		return vcq->cqe_put - vcq->cqe_get;
+		return vcq->vq->vq->num_free;
 
 	return 0;
 }
