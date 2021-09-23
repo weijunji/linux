@@ -25,20 +25,6 @@
 
 struct scatterlist;
 
-struct virtio_rdma_sq_data {
-    struct virtio_rdma_qp *qp;
-    struct virtio_rdma_cmd_post_send cmd;
-    struct scatterlist *sge_sg;
-    int status;
-};
-
-struct virtio_rdma_rq_data {
-    struct virtio_rdma_qp *qp;
-    struct virtio_rdma_cmd_post_recv cmd;
-    struct scatterlist *sge_sg;
-    int status;
-};
-
 void virtio_rdma_cq_ack(struct virtqueue *vq);
 
 #endif

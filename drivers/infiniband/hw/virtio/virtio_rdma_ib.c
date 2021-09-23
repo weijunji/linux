@@ -1531,11 +1531,11 @@ int virtio_rdma_poll_cq(struct ib_cq *ibcq, int num_entries, struct ib_wc *wc)
 int virtio_rdma_post_recv(struct ib_qp *ibqp, const struct ib_recv_wr *wr,
 			  const struct ib_recv_wr **bad_wr)
 {
-	struct scatterlist *sgs[3], hdr, status_sg;
+	struct scatterlist *sgs[1], hdr;
 	struct virtio_rdma_qp *vqp = to_vqp(ibqp);
 	struct virtio_rdma_cmd_post_recv *cmd;
-	struct virtio_rdma_rq_data *rq_data;
-	int *status, rc = 0, tmp;
+	int rc = 0, tmp;
+	unsigned int sgl_len;
 	void* ptr;
 
 	if (vqp->ibqp.qp_type == IB_QPT_GSI || vqp->ibqp.qp_type == IB_QPT_SMI)
@@ -1549,39 +1549,36 @@ int virtio_rdma_post_recv(struct ib_qp *ibqp, const struct ib_recv_wr *wr,
 			kfree(ptr);
 		}
 
-		rq_data = kzalloc(sizeof(*rq_data), GFP_ATOMIC);
-		if (!rq_data) {
+		sgl_len = sizeof(struct virtio_rdma_sge) * wr->num_sge;
+		cmd = kzalloc(sizeof(*cmd) + sgl_len, GFP_ATOMIC);
+		if (!cmd) {
 			rc = -ENOMEM;
 			goto out;
 		}
-
-		cmd = &rq_data->cmd;
-		status = &rq_data->status;
 
 		cmd->qpn = to_vqp(ibqp)->qp_handle;
 		cmd->is_kernel = vqp->type == VIRTIO_RDMA_TYPE_KERNEL;
 		cmd->num_sge = wr->num_sge;
 		cmd->wr_id = wr->wr_id;
+		memcpy((char*)cmd + sizeof(*cmd), wr->sg_list, sgl_len);
 
-		sg_init_one(&hdr, cmd, sizeof(*cmd));
+		sg_init_one(&hdr, cmd, sizeof(*cmd) + sgl_len);
 		sgs[0] = &hdr;
-		// TODO: num_sge is zero
-		rq_data->sge_sg = init_sg(wr->sg_list, sizeof(*wr->sg_list) * wr->num_sge);
-		sgs[1] = rq_data->sge_sg;
-		sg_init_one(&status_sg, status, sizeof(*status));
-		sgs[2] = &status_sg;
 
-		rc = virtqueue_add_sgs(vqp->rq->vq, sgs, 2, 1, rq_data, GFP_ATOMIC);
+		rc = virtqueue_add_sgs(vqp->rq->vq, sgs, 1, 0, cmd, GFP_ATOMIC);
 		if (rc) {
 			pr_err("post recv err %d", rc);
-			*bad_wr = wr;
-			kfree(rq_data);
-			goto out;
+			goto out_err;
 		}
 		wr = wr->next;
 	}
 
 	virtqueue_kick(vqp->rq->vq);
+	goto out;
+
+out_err:
+	*bad_wr = wr;
+	kfree(cmd);
 out:
 	spin_unlock(&vqp->rq->lock);
 	return rc;
@@ -1590,13 +1587,12 @@ out:
 int virtio_rdma_post_send(struct ib_qp *ibqp, const struct ib_send_wr *wr,
 			  const struct ib_send_wr **bad_wr)
 {
-	struct scatterlist *sgs[3], hdr, status_sg;
+	struct scatterlist *sgs[1], hdr;
 	struct virtio_rdma_qp *vqp = to_vqp(ibqp);
 	struct virtio_rdma_cmd_post_send *cmd;
-	struct ib_sge dummy_sge;
-	struct virtio_rdma_sq_data *sq_data;
-	int *status, rc = 0;
+	int rc = 0;
 	unsigned tmp;
+	unsigned int sgl_len;
 	void* ptr;
 
 	spin_lock(&vqp->sq->lock);
@@ -1615,14 +1611,12 @@ int virtio_rdma_post_send(struct ib_qp *ibqp, const struct ib_send_wr *wr,
 			kfree(ptr);
 		}
 
-		sq_data = kzalloc(sizeof(*sq_data), GFP_ATOMIC);
-		if (!sq_data) {
+		sgl_len = sizeof(struct virtio_rdma_sge) * wr->num_sge;
+		cmd = kzalloc(sizeof(*cmd) + sgl_len, GFP_ATOMIC);
+		if (!cmd) {
 			rc = -ENOMEM;
 			goto out;
 		}
-
-		cmd = &sq_data->cmd;
-		status = &sq_data->status;
 
 		cmd->qpn = vqp->qp_handle;
 		cmd->is_kernel = vqp->type == VIRTIO_RDMA_TYPE_KERNEL;
@@ -1679,21 +1673,12 @@ int virtio_rdma_post_send(struct ib_qp *ibqp, const struct ib_send_wr *wr,
 			rc = -EINVAL;
 			goto out_err;
 		}
+		memcpy((char*)cmd + sizeof(*cmd), wr->sg_list, sgl_len);
 
-		sg_init_one(&hdr, cmd, sizeof(*cmd));
+		sg_init_one(&hdr, cmd, sizeof(*cmd) + sgl_len);
 		sgs[0] = &hdr;
-		/* while sg_list is null, use a dummy sge to avoid 
-		* "zero sized buffers are not allowed"
-		*/
-		if (wr->sg_list)
-			sq_data->sge_sg = init_sg(wr->sg_list, sizeof(*wr->sg_list) * wr->num_sge);
-		else
-			sq_data->sge_sg = init_sg(&dummy_sge, sizeof(dummy_sge));
-		sgs[1] = sq_data->sge_sg;
-		sg_init_one(&status_sg, status, sizeof(*status));
-		sgs[2] = &status_sg;
 
-		rc = virtqueue_add_sgs(vqp->sq->vq, sgs, 2, 1, sq_data, GFP_ATOMIC);
+		rc = virtqueue_add_sgs(vqp->sq->vq, sgs, 1, 0, cmd, GFP_ATOMIC);
 		if (rc) {
 			pr_err("post send err %d", rc);
 			goto out_err;
@@ -1707,7 +1692,7 @@ int virtio_rdma_post_send(struct ib_qp *ibqp, const struct ib_send_wr *wr,
 
 out_err:
 	*bad_wr = wr;
-	kfree(sq_data);
+	kfree(cmd);
 out:
 	spin_unlock(&vqp->sq->lock);
 	return rc;
