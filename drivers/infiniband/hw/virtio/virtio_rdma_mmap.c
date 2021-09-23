@@ -56,13 +56,20 @@ int virtio_rdma_mmap(struct ib_ucontext *ctx, struct vm_area_struct *vma)
 	entry = to_ventry(rdma_entry);
 
 	if (entry->type == VIRTIO_RDMA_MMAP_CQ) {
-		// TODO: remove me, only for debug
-		((char*)entry->cq_buf)[0] = 'W';
-		// FIXME: buf is not align to page?
+		uint64_t vq_size = PAGE_ALIGN(vring_size(virtqueue_get_vring_size(entry->queue), SMP_CACHE_BYTES));
+		WARN_ON(vq_size + entry->ubuf_size != vma->vm_end - vma->vm_start);
+
+		// vring
 		rc = remap_pfn_range(vma, vma->vm_start,
-			       page_to_pfn(virt_to_page(entry->cq_buf)),
-			       vma->vm_end - vma->vm_start,
-			       vma->vm_page_prot);
+			       page_to_pfn(virt_to_page((virtqueue_get_vring(entry->queue)->desc))),
+			       vq_size, vma->vm_page_prot);
+		
+		sprintf(entry->ubuf, "WW");
+		// user buffer
+		rc = remap_pfn_range(vma, vma->vm_start + vq_size,
+			       page_to_pfn(virt_to_page(entry->ubuf)), entry->ubuf_size,
+				   vma->vm_page_prot);
+
 		if (rc) {
 			pr_warn("remap_pfn_range failed: %lu, %zu\n", vma->vm_pgoff,
 				size);

@@ -304,16 +304,16 @@ static int virtio_rdma_create_cq(struct ib_cq *ibcq,
 	struct cmd_create_cq *cmd;
 	struct rsp_create_cq *rsp;
 	struct scatterlist sg;
-	int rc, i, fill;
+	int rc, i;
 	int entries = attr->cqe;
+	int total_size;
 	struct virtio_rdma_user_mmap_entry* entry;
 
 	if (!atomic_add_unless(&vdev->num_cq, 1, ibcq->device->attrs.max_cq))
 		return -ENOMEM;
 
-	// size should be power of 2, to avoid idx overflow cause an invalid idx
-	entries = roundup_pow_of_two(entries);
-	vcq->queue = kcalloc(entries, sizeof(*vcq->queue), GFP_KERNEL);
+	total_size = PAGE_ALIGN(entries * sizeof(*vcq->queue));
+	vcq->queue = alloc_pages_exact(total_size, GFP_KERNEL);
 	if (!vcq->queue)
 		return -ENOMEM;
 
@@ -357,27 +357,30 @@ static int virtio_rdma_create_cq(struct ib_cq *ibcq,
 	vcq->num_cqe = entries;
 	vdev->cqs[rsp->cqn] = vcq;
 
-	// fill = min(entries, vdev->ib_dev.attrs.max_cqe);
-	for(i = 0; i < entries; i++) {
-		sg_init_one(&sg, vcq->queue + i, sizeof(*vcq->queue));
-		virtqueue_add_inbuf(vcq->vq->vq, &sg, 1, vcq->queue + i, GFP_KERNEL);
-	}
-
 	if (udata) {
 		struct virtio_rdma_create_cq_uresp uresp = {};
 		struct virtio_rdma_ucontext *uctx = rdma_udata_to_drv_context(udata,
 			struct virtio_rdma_ucontext, ibucontext);
 
 		entry->type = VIRTIO_RDMA_MMAP_CQ;
-		entry->cq_buf = vcq->queue;
+		entry->queue = vcq->vq->vq;
+		entry->ubuf = vcq->queue;
+		entry->ubuf_size = total_size;
+
+		uresp.vq_align = SMP_CACHE_BYTES;
+		uresp.vq_size = PAGE_ALIGN(vring_size(virtqueue_get_vring_size(vcq->vq->vq), SMP_CACHE_BYTES));
+		total_size += uresp.vq_size;
 
 		rc = rdma_user_mmap_entry_insert(&uctx->ibucontext, &entry->rdma_entry,
-			entries * sizeof(*vcq->queue));
+			total_size);
 		if (rc)
 			goto out_err;
 
-		uresp.num_cqe = entries;
 		uresp.offset = rdma_user_mmap_get_offset(&entry->rdma_entry);
+		uresp.cq_phys_addr = virt_to_phys(vcq->queue);
+		uresp.num_cqe = entries;
+		uresp.num_cvqe = virtqueue_get_vring_size(vcq->vq->vq);
+		uresp.cq_size = total_size;
 
 		if (udata->outlen < sizeof(uresp)) {
 			rc = -EINVAL;
@@ -388,6 +391,11 @@ static int virtio_rdma_create_cq(struct ib_cq *ibcq,
 			goto out_err;
 
 		vcq->entry = &entry->rdma_entry;
+	} else {
+		for(i = 0; i < entries; i++) {
+			sg_init_one(&sg, vcq->queue + i, sizeof(*vcq->queue));
+			virtqueue_add_inbuf(vcq->vq->vq, &sg, 1, vcq->queue + i, GFP_KERNEL);
+		}
 	}
 
 	spin_lock_init(&vcq->lock);
@@ -892,7 +900,7 @@ found:
 
 static void* virtio_rdma_init_mmap_entry(struct virtqueue *vq,
            struct virtio_rdma_user_mmap_entry* entry, int buf_size,
-		   struct virtio_rdma_ucontext* vctx, __u64* size)
+		   struct virtio_rdma_ucontext* vctx, __u64* size, __u32* vq_size)
 {
 	void* buf = NULL;
 	int rc;
@@ -908,7 +916,8 @@ static void* virtio_rdma_init_mmap_entry(struct virtqueue *vq,
 	entry->ubuf = buf;
 	entry->ubuf_size = PAGE_ALIGN(buf_size);
 
-	total_size += PAGE_ALIGN(vring_size(virtqueue_get_vring_size(vq), SMP_CACHE_BYTES)) + PAGE_SIZE;
+	*vq_size = PAGE_ALIGN(vring_size(virtqueue_get_vring_size(vq), SMP_CACHE_BYTES));
+	total_size += *vq_size + PAGE_SIZE;
 
 	rc = rdma_user_mmap_entry_insert(&vctx->ibucontext, &entry->rdma_entry,
 			total_size);
@@ -1004,34 +1013,33 @@ struct ib_qp *virtio_rdma_create_qp(struct ib_pd *ibpd,
 
 		vqp->usq_buf = virtio_rdma_init_mmap_entry(vqp->sq->vq, &entry[0],
 				sizeof(struct virtio_rdma_cmd_post_send) +
-				sizeof(struct virtio_rdma_sge), uctx, &uresp.sq_size);
+				sizeof(struct virtio_rdma_sge), uctx, &uresp.sq_size, &uresp.svq_size);
 		if (!vqp->usq_buf)
 			goto out_err;
 
 		vqp->urq_buf = virtio_rdma_init_mmap_entry(vqp->rq->vq, &entry[1],
 				sizeof(struct virtio_rdma_cmd_post_recv) +
-				sizeof(struct virtio_rdma_sge), uctx, &uresp.rq_size);
+				sizeof(struct virtio_rdma_sge), uctx, &uresp.rq_size, &uresp.rvq_size);
 		if (!vqp->urq_buf) {
 			// TODO: pop sq entry
 			kfree(vqp->usq_buf);
 			goto out_err;
 		}
-		
-		// void eventfd_ctx_put(struct eventfd_ctx *ctx);
-		// __u64 eventfd_signal(struct eventfd_ctx *ctx, __u64 n);
-		// ssize_t eventfd_ctx_read(struct eventfd_ctx *ctx, int no_wait, __u64 *cnt);
 
 		uresp.sq_offset = rdma_user_mmap_get_offset(&entry[0].rdma_entry);
-		uresp.sq_phys_addr = (__u64)entry[0].ubuf;
+		uresp.sq_phys_addr = virt_to_phys(entry[0].ubuf);
 		uresp.num_sqe = attr->cap.max_send_wr;
 		uresp.num_svqe = virtqueue_get_vring_size(vqp->sq->vq);
 		uresp.sq_idx = vqp->sq->vq->index;
 
 		uresp.rq_offset = rdma_user_mmap_get_offset(&entry[1].rdma_entry);
-		uresp.rq_phys_addr = (__u64)entry[1].ubuf;
+		uresp.rq_phys_addr = virt_to_phys(entry[1].ubuf);
 		uresp.num_rqe = attr->cap.max_recv_wr;
 		uresp.num_rvqe = virtqueue_get_vring_size(vqp->rq->vq);
 		uresp.rq_idx = vqp->rq->vq->index;
+
+		uresp.vq_align = SMP_CACHE_BYTES;
+		uresp.page_size = PAGE_SIZE;
 
 		if (udata->outlen < sizeof(uresp)) {
 			rc = -EINVAL;

@@ -31,15 +31,9 @@ struct virtio_rdma_user_mmap_entry {
 	#define VIRTIO_RDMA_MMAP_CQ 1
 	#define VIRTIO_RDMA_MMAP_QP 2
 	uint8_t type;
-
-	union {
-		struct {
-			struct virtqueue *queue;
-			void* ubuf;
-			uint64_t ubuf_size;
-		};
-		void* cq_buf;
-	};
+	struct virtqueue *queue;
+	void* ubuf;
+	uint64_t ubuf_size;
 };
 
 static inline struct virtio_rdma_user_mmap_entry* to_ventry
