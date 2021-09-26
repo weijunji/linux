@@ -129,7 +129,8 @@ struct virtio_rdma_qp {
 	struct virtio_rdma_vq *rq;
 	void* urq_buf;
 
-	struct virtio_rdma_user_mmap_entry* entrys;
+	struct virtio_rdma_user_mmap_entry* sq_entry;
+	struct virtio_rdma_user_mmap_entry* rq_entry;
 };
 
 struct virtio_rdma_global_route {

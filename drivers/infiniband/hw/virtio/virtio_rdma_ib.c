@@ -899,17 +899,24 @@ found:
 }
 
 static void* virtio_rdma_init_mmap_entry(struct virtqueue *vq,
-           struct virtio_rdma_user_mmap_entry* entry, int buf_size,
+           struct virtio_rdma_user_mmap_entry** entry_, int buf_size,
 		   struct virtio_rdma_ucontext* vctx, __u64* size, __u32* vq_size)
 {
 	void* buf = NULL;
 	int rc;
 	size_t total_size;
+	struct virtio_rdma_user_mmap_entry* entry;
 
 	total_size = PAGE_ALIGN(buf_size);
 	buf = alloc_pages_exact(total_size, GFP_KERNEL);
 	if (!buf)
 		return NULL;
+
+	entry = kzalloc(sizeof(*entry), GFP_KERNEL);
+	if (!entry) {
+		kfree(buf);
+		return NULL;
+	}
 
 	entry->type = VIRTIO_RDMA_MMAP_QP;
 	entry->queue = vq;
@@ -927,6 +934,7 @@ static void* virtio_rdma_init_mmap_entry(struct virtqueue *vq,
 	}
 
 	*size = total_size;
+	*entry_ = entry;
 	return buf;
 }
 
@@ -940,7 +948,6 @@ struct ib_qp *virtio_rdma_create_qp(struct ib_pd *ibpd,
 	struct cmd_create_qp *cmd;
 	struct rsp_create_qp *rsp;
 	struct virtio_rdma_qp *vqp;
-	struct virtio_rdma_user_mmap_entry* entry;
 	int rc, vqn;
 	struct ib_qp *ret;
 
@@ -962,16 +969,6 @@ struct ib_qp *virtio_rdma_create_qp(struct ib_pd *ibpd,
 		kfree(cmd);
 		kfree(rsp);
 		return ERR_PTR(-ENOMEM);
-	}
-
-	if (udata) {
-		entry = kcalloc(2, sizeof(*entry), GFP_ATOMIC);
-		if (!entry) {
-			kfree(vqp);
-			kfree(cmd);
-			kfree(rsp);
-			return ERR_PTR(-ENOMEM);
-		}
 	}
 
 	cmd->pdn = to_vpd(ibpd)->pd_handle;
@@ -1010,30 +1007,35 @@ struct ib_qp *virtio_rdma_create_qp(struct ib_pd *ibpd,
 		struct virtio_rdma_create_qp_uresp uresp = {};
 		struct virtio_rdma_ucontext *uctx = rdma_udata_to_drv_context(udata,
 			struct virtio_rdma_ucontext, ibucontext);
-
-		vqp->usq_buf = virtio_rdma_init_mmap_entry(vqp->sq->vq, &entry[0],
-				sizeof(struct virtio_rdma_cmd_post_send) +
-				sizeof(struct virtio_rdma_sge), uctx, &uresp.sq_size, &uresp.svq_size);
+		uint32_t per_size;
+		
+		per_size = sizeof(struct virtio_rdma_cmd_post_send) +
+				   sizeof(struct virtio_rdma_sge) * attr->cap.max_send_sge;
+		vqp->usq_buf = virtio_rdma_init_mmap_entry(vqp->sq->vq, &vqp->sq_entry,
+				per_size * attr->cap.max_send_wr, uctx, &uresp.sq_size,
+				&uresp.svq_size);
 		if (!vqp->usq_buf)
 			goto out_err;
 
-		vqp->urq_buf = virtio_rdma_init_mmap_entry(vqp->rq->vq, &entry[1],
-				sizeof(struct virtio_rdma_cmd_post_recv) +
-				sizeof(struct virtio_rdma_sge), uctx, &uresp.rq_size, &uresp.rvq_size);
+		per_size = sizeof(struct virtio_rdma_cmd_post_recv) +
+				   sizeof(struct virtio_rdma_sge) * attr->cap.max_recv_sge;
+		vqp->urq_buf = virtio_rdma_init_mmap_entry(vqp->rq->vq, &vqp->rq_entry,
+				per_size * attr->cap.max_recv_wr, uctx, &uresp.rq_size,
+				&uresp.rvq_size);
 		if (!vqp->urq_buf) {
 			// TODO: pop sq entry
 			kfree(vqp->usq_buf);
 			goto out_err;
 		}
 
-		uresp.sq_offset = rdma_user_mmap_get_offset(&entry[0].rdma_entry);
-		uresp.sq_phys_addr = virt_to_phys(entry[0].ubuf);
+		uresp.sq_offset = rdma_user_mmap_get_offset(&vqp->sq_entry->rdma_entry);
+		uresp.sq_phys_addr = virt_to_phys(vqp->usq_buf);
 		uresp.num_sqe = attr->cap.max_send_wr;
 		uresp.num_svqe = virtqueue_get_vring_size(vqp->sq->vq);
 		uresp.sq_idx = vqp->sq->vq->index;
 
-		uresp.rq_offset = rdma_user_mmap_get_offset(&entry[1].rdma_entry);
-		uresp.rq_phys_addr = virt_to_phys(entry[1].ubuf);
+		uresp.rq_offset = rdma_user_mmap_get_offset(&vqp->rq_entry->rdma_entry);
+		uresp.rq_phys_addr = virt_to_phys(vqp->urq_buf);
 		uresp.num_rqe = attr->cap.max_recv_wr;
 		uresp.num_rvqe = virtqueue_get_vring_size(vqp->rq->vq);
 		uresp.rq_idx = vqp->rq->vq->index;
@@ -1048,8 +1050,6 @@ struct ib_qp *virtio_rdma_create_qp(struct ib_pd *ibpd,
 		rc = ib_copy_to_udata(udata, &uresp, sizeof(uresp));
 		if (rc)
 			goto out_err_u;
-
-		vqp->entrys = entry;
 	}
 
 	pr_info("%s: qpn 0x%x wq %d rq %d\n", __func__, rsp->qpn,
@@ -1060,9 +1060,9 @@ struct ib_qp *virtio_rdma_create_qp(struct ib_pd *ibpd,
 out_err_u:
 	kfree(vqp->usq_buf);
 	kfree(vqp->urq_buf);
+	rdma_user_mmap_entry_remove(&vqp->sq_entry->rdma_entry);
+	rdma_user_mmap_entry_remove(&vqp->rq_entry->rdma_entry);
 out_err:
-	if (entry)
-		kfree(entry);
 	kfree(vqp);
 out:
 	kfree(rsp);
@@ -1099,16 +1099,13 @@ int virtio_rdma_destroy_qp(struct ib_qp *ibqp, struct ib_udata *udata)
 	rc = virtio_rdma_exec_cmd(vdev, VIRTIO_CMD_DESTROY_QP,
 	                          &in, &out);
 
-	if (vqp->entrys) {
-		// this means qp is created for userspace,
-		// so we need to free all uverbs resources
+	if (udata) {
 		kfree(vqp->usq_buf);
 		kfree(vqp->urq_buf);
-		rdma_user_mmap_entry_remove(&vqp->entrys[0].rdma_entry);
-		rdma_user_mmap_entry_remove(&vqp->entrys[1].rdma_entry);
-		kfree(vqp->entrys);
+		rdma_user_mmap_entry_remove(&vqp->sq_entry->rdma_entry);
+		rdma_user_mmap_entry_remove(&vqp->rq_entry->rdma_entry);
 	}
-	
+
 	atomic_dec(&vdev->num_qp);
 
 	smp_store_mb(vdev->qp_vq_using[vqp->sq->idx / 2], -1);
