@@ -59,6 +59,8 @@ struct virtio_rdma_create_qp_uresp {
 
     __u32 vq_align;
     __u32 page_size;
+
+    __u32 qpn;
 };
 
 struct virtio_rdma_create_cq_uresp {

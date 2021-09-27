@@ -63,9 +63,9 @@ int virtio_rdma_mmap(struct ib_ucontext *ctx, struct vm_area_struct *vma)
 		rc = remap_pfn_range(vma, vma->vm_start,
 			       page_to_pfn(virt_to_page((virtqueue_get_vring(entry->queue)->desc))),
 			       vq_size, vma->vm_page_prot);
-		
-		sprintf(entry->ubuf, "WW");
+
 		// user buffer
+		sprintf(entry->ubuf, "WW");
 		rc = remap_pfn_range(vma, vma->vm_start + vq_size,
 			       page_to_pfn(virt_to_page(entry->ubuf)), entry->ubuf_size,
 				   vma->vm_page_prot);
@@ -90,6 +90,7 @@ int virtio_rdma_mmap(struct ib_ucontext *ctx, struct vm_area_struct *vma)
 			       vq_size, vma->vm_page_prot);
 
 		// user buffer
+		sprintf(entry->ubuf, "WW");
 		rc = remap_pfn_range(vma, vma->vm_start + PAGE_SIZE + vq_size,
 			       page_to_pfn(virt_to_page(entry->ubuf)), entry->ubuf_size,
 				   vma->vm_page_prot);
