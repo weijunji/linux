@@ -118,10 +118,6 @@ struct cmd_destroy_cq {
 	__u32 cqn;
 };
 
-struct rsp_destroy_cq {
-	__u32 cqn;
-};
-
 struct cmd_create_pd {
 	__u32 ctx_handle;
 };
@@ -131,10 +127,6 @@ struct rsp_create_pd {
 };
 
 struct cmd_destroy_pd {
-	__u32 pdn;
-};
-
-struct rsp_destroy_pd {
 	__u32 pdn;
 };
 
@@ -186,10 +178,6 @@ struct cmd_dereg_mr {
 	__u8 is_user_mr;
 };
 
-struct rsp_dereg_mr {
-    __u32 mrn;
-};
-
 struct cmd_create_qp {
     __u32 pdn;
     __u8 qp_type;
@@ -221,10 +209,6 @@ struct cmd_destroy_qp {
     __u32 qpn;
 };
 
-struct rsp_destroy_qp {
-    __u32 qpn;
-};
-
 struct cmd_query_qp {
 	__u32 qpn;
 	__u32 attr_mask;
@@ -248,10 +232,6 @@ struct rsp_create_uc {
 };
 
 struct cmd_dealloc_uc {
-	__u32 ctx_handle;
-};
-
-struct rsp_dealloc_uc {
 	__u32 ctx_handle;
 };
 

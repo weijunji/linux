@@ -50,6 +50,7 @@ static const char* cmd_name[] = {
 	[VIRTIO_CMD_DEREG_MR] = "VIRTIO_CMD_DEREG_MR",
 	[VIRTIO_CMD_CREATE_QP] = "VIRTIO_CMD_CREATE_QP",
     [VIRTIO_CMD_MODIFY_QP] = "VIRTIO_CMD_MODIFY_QP",
+	[VIRTIO_CMD_QUERY_QP] = "VIRTIO_CMD_QUERY_QP",
     [VIRTIO_CMD_DESTROY_QP] = "VIRTIO_CMD_DESTROY_QP",
 	[VIRTIO_CMD_QUERY_GID] = "VIRTIO_CMD_QUERY_GID",
 	[VIRTIO_CMD_CREATE_UC] = "VIRTIO_CMD_CREATE_UC",
@@ -127,7 +128,7 @@ static int virtio_rdma_exec_cmd(struct virtio_rdma_dev *di, int cmd,
 	struct scatterlist *sgs[4], hdr, status;
 	struct control_buf *ctrl;
 	unsigned tmp;
-	int rc;
+	int rc, in_sgs = 1, out_sgs = 1;
 	unsigned long flags;
 
 	pr_info("%s: cmd %d %s\n", __func__, cmd, cmd_name[cmd]);
@@ -139,12 +140,18 @@ static int virtio_rdma_exec_cmd(struct virtio_rdma_dev *di, int cmd,
 
 	sg_init_one(&hdr, &ctrl->cmd, sizeof(ctrl->cmd));
 	sgs[0] = &hdr;
-	sgs[1] = in;
-	sgs[2] = out;
+	if (in) {
+		sgs[1] = in;
+		in_sgs++;
+	}
 	sg_init_one(&status, &ctrl->status, sizeof(ctrl->status));
-	sgs[3] = &status;
+	sgs[in_sgs] = &status;
+	if (out) {
+		sgs[in_sgs + 1] = out;
+		out_sgs++;
+	}
 
-	rc = virtqueue_add_sgs(di->ctrl_vq, sgs, 2, 2, di, GFP_ATOMIC);
+	rc = virtqueue_add_sgs(di->ctrl_vq, sgs, in_sgs, out_sgs, di, GFP_ATOMIC);
 	if (rc)
 		goto out;
 
@@ -415,36 +422,30 @@ out:
 static int virtio_rdma_destroy_cq(struct ib_cq *cq, struct ib_udata *udata)
 {
 	struct virtio_rdma_cq *vcq;
-	struct scatterlist in, out;
+	struct scatterlist in;
 	struct cmd_destroy_cq *cmd;
-	struct rsp_destroy_cq *rsp;
+
 	unsigned tmp;
 
 	cmd = kmalloc(sizeof(*cmd), GFP_ATOMIC);
 	if (!cmd)
 		return -ENOMEM;
 
-	rsp = kmalloc(sizeof(*rsp), GFP_ATOMIC);
-	if (!rsp) {
-		kfree(cmd);
-		return -ENOMEM;
-	}
-
 	vcq = to_vcq(cq);
 
 	cmd->cqn = vcq->cq_handle;
 	sg_init_one(&in, cmd, sizeof(*cmd));
-	sg_init_one(&out, rsp, sizeof(*rsp));
 
 	virtqueue_disable_cb(vcq->vq->vq);
 
 	virtio_rdma_exec_cmd(to_vdev(cq->device), VIRTIO_CMD_DESTROY_CQ,
-				  &in, &out);
+				  &in, NULL);
 
 	/* pop all from virtqueue, after host call virtqueue_drop_all,
 	 * prepare for next use.
 	 */
-	while(virtqueue_get_buf(vcq->vq->vq, &tmp));
+	if (!udata)
+		while(virtqueue_get_buf(vcq->vq->vq, &tmp));
 
 	atomic_dec(&to_vdev(cq->device)->num_cq);
 	virtqueue_enable_cb(vcq->vq->vq);
@@ -456,7 +457,6 @@ static int virtio_rdma_destroy_cq(struct ib_cq *cq, struct ib_udata *udata)
 
 	kfree(vcq->queue);
 	kfree(cmd);
-	kfree(rsp);
 	return 0;
 }
 
@@ -509,28 +509,20 @@ static int virtio_rdma_dealloc_pd(struct ib_pd *pd, struct ib_udata *udata)
 	struct virtio_rdma_pd *vpd = to_vpd(pd);
 	struct ib_device *ibdev = pd->device;
 	struct cmd_destroy_pd *cmd;
-	struct rsp_destroy_pd *rsp;
-	struct scatterlist in, out;
+	struct scatterlist in;
 
 	pr_debug("%s:\n", __func__);
 
 	cmd = kmalloc(sizeof(*cmd), GFP_ATOMIC);
 	if (!cmd)
 		return -ENOMEM;
-	rsp = kmalloc(sizeof(*rsp), GFP_ATOMIC);
-	if (!rsp) {
-		kfree(rsp);
-		return -ENOMEM;
-	}
 
 	cmd->pdn = vpd->pd_handle;
 	sg_init_one(&in, cmd, sizeof(*cmd));
-	sg_init_one(&out, rsp, sizeof(*rsp));
 
-	virtio_rdma_exec_cmd(to_vdev(ibdev), VIRTIO_CMD_DESTROY_PD, &in, &out);
+	virtio_rdma_exec_cmd(to_vdev(ibdev), VIRTIO_CMD_DESTROY_PD, &in, NULL);
 
 	kfree(cmd);
-	kfree(rsp);
 	return 0;
 }
 
@@ -772,7 +764,7 @@ struct ib_mr *virtio_rdma_reg_user_mr(struct ib_pd *pd, u64 start, u64 length,
 		return ERR_PTR(-ENOMEM);
 
 	rsp = kmalloc(sizeof(*rsp), GFP_ATOMIC);
-	if (!cmd)
+	if (!rsp)
 		goto err_rsp;
 
 	mr = kzalloc(sizeof(*mr), GFP_ATOMIC);
@@ -806,6 +798,7 @@ struct ib_mr *virtio_rdma_reg_user_mr(struct ib_pd *pd, u64 start, u64 length,
 	cmd->access_flags = access_flags;
 	cmd->start = start;
 	cmd->length = length;
+	cmd->virt_addr = virt_addr;
 	cmd->pages = mr->dma_pages;
 	cmd->npages = npages;
 
@@ -844,27 +837,21 @@ out:
 int virtio_rdma_dereg_mr(struct ib_mr *ibmr, struct ib_udata *udata)
 {
 	struct virtio_rdma_mr *mr = to_vmr(ibmr);
-	struct scatterlist in, out;
+	struct scatterlist in;
 	struct cmd_dereg_mr *cmd;
-	struct rsp_dereg_mr *rsp;
 	int rc = -ENOMEM;
 
 	cmd = kmalloc(sizeof(*cmd), GFP_ATOMIC);
 	if (!cmd)
 		return -ENOMEM;
 
-	rsp = kmalloc(sizeof(*rsp), GFP_ATOMIC);
-	if (!rsp)
-		goto out_rsp;
-
 	cmd->mrn = mr->mr_handle;
 	cmd->is_user_mr = mr->type == VIRTIO_RDMA_TYPE_USER;
 
 	sg_init_one(&in, cmd, sizeof(*cmd));
-	sg_init_one(&out, rsp, sizeof(*rsp));
 
 	rc = virtio_rdma_exec_cmd(to_vdev(ibmr->device), VIRTIO_CMD_DEREG_MR,
-	                          &in, &out);
+	                          &in, NULL);
 	if (rc) {
 		rc = -EIO;
 		goto out;
@@ -873,9 +860,8 @@ int virtio_rdma_dereg_mr(struct ib_mr *ibmr, struct ib_udata *udata)
 	dma_free_coherent(to_vdev(ibmr->device)->vdev->dev.parent, PAGE_SIZE, &mr->pages, GFP_KERNEL);
 	if (mr->type == VIRTIO_RDMA_TYPE_USER)
 		ib_umem_release(mr->umem);
+
 out:
-	kfree(rsp);
-out_rsp:
 	kfree(cmd);
 	return rc;
 }
@@ -1042,6 +1028,7 @@ struct ib_qp *virtio_rdma_create_qp(struct ib_pd *ibpd,
 
 		uresp.vq_align = SMP_CACHE_BYTES;
 		uresp.page_size = PAGE_SIZE;
+		uresp.qpn = vqp->qp_handle;
 
 		if (udata->outlen < sizeof(uresp)) {
 			rc = -EINVAL;
@@ -1074,9 +1061,8 @@ int virtio_rdma_destroy_qp(struct ib_qp *ibqp, struct ib_udata *udata)
 {
 	struct virtio_rdma_dev *vdev = to_vdev(ibqp->device);
 	struct virtio_rdma_qp *vqp = to_vqp(ibqp);
-	struct scatterlist in, out;
+	struct scatterlist in;
 	struct cmd_destroy_qp *cmd;
-	struct rsp_destroy_qp *rsp;
 	int rc;
 
 	pr_info("%s: qpn %d\n", __func__, vqp->qp_handle);
@@ -1085,19 +1071,12 @@ int virtio_rdma_destroy_qp(struct ib_qp *ibqp, struct ib_udata *udata)
 	if (!cmd)
 		return -ENOMEM;
 
-	rsp = kmalloc(sizeof(*rsp), GFP_ATOMIC);
-	if (!rsp) {
-		kfree(cmd);
-		return -ENOMEM;
-	}
-
 	cmd->qpn = vqp->qp_handle;
 
 	sg_init_one(&in, cmd, sizeof(*cmd));
-	sg_init_one(&out, rsp, sizeof(*rsp));
 
 	rc = virtio_rdma_exec_cmd(vdev, VIRTIO_CMD_DESTROY_QP,
-	                          &in, &out);
+	                          &in, NULL);
 
 	if (udata) {
 		kfree(vqp->usq_buf);
@@ -1110,7 +1089,6 @@ int virtio_rdma_destroy_qp(struct ib_qp *ibqp, struct ib_udata *udata)
 
 	smp_store_mb(vdev->qp_vq_using[vqp->sq->idx / 2], -1);
 
-	kfree(rsp);
 	kfree(cmd);
 	return rc;
 }
@@ -1144,7 +1122,7 @@ int virtio_rdma_query_gid(struct ib_device *ibdev, u32 port, int index,
 
 	if (!rc) {
 		gid_attr.ndev = to_vdev(ibdev)->netdev;
-		gid_attr.gid_type = IB_GID_TYPE_ROCE;
+		gid_attr.gid_type = IB_GID_TYPE_ROCE_UDP_ENCAP;
 		ib_cache_gid_add(ibdev, port, gid, &gid_attr);
 	}
 
@@ -1207,29 +1185,20 @@ out:
 
 static void virtio_rdma_dealloc_ucontext(struct ib_ucontext *ibcontext)
 {
-	struct scatterlist in, out;
+	struct scatterlist in;
 	struct cmd_dealloc_uc *cmd;
-	struct rsp_dealloc_uc *rsp;
 	struct virtio_rdma_ucontext *vuc = to_vucontext(ibcontext);
 	
 	cmd = kmalloc(sizeof(*cmd), GFP_ATOMIC);
 	if (!cmd)
 		return;
 
-	rsp = kmalloc(sizeof(*rsp), GFP_ATOMIC);
-	if (!rsp) {
-		kfree(cmd);
-		return;
-	}
-
 	cmd->ctx_handle = vuc->ctx_handle;
 	sg_init_one(&in, cmd, sizeof(*cmd));
-	sg_init_one(&out, rsp, sizeof(*rsp));
 
 	virtio_rdma_exec_cmd(to_vdev(ibcontext->device), VIRTIO_CMD_DEALLOC_UC, &in,
-				  &out);
+				  NULL);
 
-	kfree(rsp);
 	kfree(cmd);
 }
 
