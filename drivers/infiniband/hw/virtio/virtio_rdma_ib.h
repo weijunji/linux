@@ -200,18 +200,6 @@ struct virtio_rdma_ucontext {
 	__u64 ctx_handle;
 };
 
-struct virtio_rdma_av {
-	__u32 port_pd;
-	__u32 sl_tclass_flowlabel;
-	__u8 dgid[16];
-	__u8 src_path_bits;
-	__u8 gid_index;
-	__u8 stat_rate;
-	__u8 hop_limit;
-	__u8 dmac[6];
-	__u8 reserved[6];
-};
-
 struct virtio_rdma_ah {
 	struct ib_ah ibah;
 	struct virtio_rdma_av av;

@@ -267,7 +267,7 @@ static int virtio_rdma_query_port(struct ib_device *ibdev, u32 port,
 
 	props->state = port_attr.state;
 	props->max_mtu = port_attr.max_mtu;
-	props->active_width = port_attr.active_width;
+	props->active_mtu = port_attr.active_mtu;
 	props->phys_mtu = port_attr.phys_mtu;
 	props->gid_tbl_len = port_attr.gid_tbl_len;
 	props->ip_gids = port_attr.ip_gids;
@@ -460,6 +460,8 @@ static int virtio_rdma_destroy_cq(struct ib_cq *cq, struct ib_udata *udata)
 	return 0;
 }
 
+static int virtio_rdma_dealloc_pd(struct ib_pd *pd, struct ib_udata *udata);
+
 static int virtio_rdma_alloc_pd(struct ib_pd *ibpd, struct ib_udata *udata)
 {
 	struct virtio_rdma_pd *pd = to_vpd(ibpd);
@@ -493,6 +495,15 @@ static int virtio_rdma_alloc_pd(struct ib_pd *ibpd, struct ib_udata *udata)
 		goto out;
 
 	pd->pd_handle = rsp->pdn;
+
+	if (udata) {
+		struct virtio_rdma_alloc_pd_uresp uresp = {};
+		if (ib_copy_to_udata(udata, &uresp, sizeof(uresp))) {
+			pr_warn("failed to copy back protection domain\n");
+			virtio_rdma_dealloc_pd(&pd->ibpd, udata);
+			return -EFAULT;
+		}
+	}
 
 	printk("%s: pd_handle=%d\n", __func__, pd->pd_handle);
 
@@ -1222,7 +1233,8 @@ static int virtio_rdma_create_ah(struct ib_ah *ibah,
 	if (!atomic_add_unless(&vdev->num_ah, 1, vdev->ib_dev.attrs.max_ah))
 		return -ENOMEM;
 
-	ah->av.port_pd = to_vpd(ibah->pd)->pd_handle | (port_num << 24);
+	ah->av.port = port_num;
+	ah->av.pdn = to_vpd(ibah->pd)->pd_handle;
 	ah->av.src_path_bits = rdma_ah_get_path_bits(init_attr->ah_attr);
 	ah->av.src_path_bits |= 0x80;
 	ah->av.gid_index = grh->sgid_index;
@@ -1596,9 +1608,16 @@ int virtio_rdma_post_send(struct ib_qp *ibqp, const struct ib_send_wr *wr,
 		switch (ibqp->qp_type) {
 		case IB_QPT_GSI:
 		case IB_QPT_UD:
-			pr_err("Not support UD now\n");
-			rc = -EINVAL;
-			goto out_err;
+			if (unlikely(!ud_wr(wr)->ah)) {
+				pr_warn("invalid address handle\n");
+				*bad_wr = wr;
+				rc = -EINVAL;
+				goto out;
+			}
+
+			cmd->wr.ud.remote_qpn = ud_wr(wr)->remote_qpn;
+			cmd->wr.ud.remote_qkey = ud_wr(wr)->remote_qkey;
+			cmd->wr.ud.av = to_vah(ud_wr(wr)->ah)->av;
 			break;
 		case IB_QPT_RC:
 			switch (wr->opcode) {
