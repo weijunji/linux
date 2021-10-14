@@ -400,6 +400,21 @@ static int UVERBS_HANDLER(UVERBS_METHOD_QUERY_GID_ENTRY)(
 	if (!rdma_is_port_valid(ib_dev, port_num))
 		return -EINVAL;
 
+	if (rdma_protocol_virtio(ib_dev, port_num)) {
+		ret = rdma_query_gid(ib_dev, port_num, gid_index, (union ib_gid *)&entry.gid);
+		entry.gid_index = gid_index;
+		entry.port_num = port_num;
+		entry.gid_type = IB_UVERBS_GID_TYPE_ROCE_V2;
+
+		if (ret)
+			return ret;
+
+		ret = uverbs_copy_to_struct_or_zero(
+		attrs, UVERBS_ATTR_QUERY_GID_ENTRY_RESP_ENTRY, &entry,
+		sizeof(entry));
+		return ret;
+	}
+	
 	gid_attr = rdma_get_gid_attr(ib_dev, port_num, gid_index);
 	if (IS_ERR(gid_attr))
 		return PTR_ERR(gid_attr);

@@ -824,7 +824,7 @@ struct ib_mr *virtio_rdma_reg_user_mr(struct ib_pd *pd, u64 start, u64 length,
 		kfree(rsp);
 		kfree(mr);
 		kfree(cmd);
-		return ERR_PTR(rc);
+		return ERR_PTR(EIO);
 	}
 
 	mr->mr_handle = rsp->mrn;
@@ -1535,7 +1535,7 @@ int virtio_rdma_post_recv(struct ib_qp *ibqp, const struct ib_recv_wr *wr,
 		}
 
 		cmd->qpn = to_vqp(ibqp)->qp_handle;
-		cmd->is_kernel = vqp->type == VIRTIO_RDMA_TYPE_KERNEL;
+		cmd->is_kernel = 1;
 		cmd->num_sge = wr->num_sge;
 		cmd->wr_id = wr->wr_id;
 		memcpy((char*)cmd + sizeof(*cmd), wr->sg_list, sgl_len);
@@ -1597,7 +1597,7 @@ int virtio_rdma_post_send(struct ib_qp *ibqp, const struct ib_send_wr *wr,
 		}
 
 		cmd->qpn = vqp->qp_handle;
-		cmd->is_kernel = vqp->type == VIRTIO_RDMA_TYPE_KERNEL;
+		cmd->is_kernel = 1;
 		cmd->num_sge = wr->num_sge;
 		cmd->send_flags = wr->send_flags;
 		cmd->opcode = wr->opcode;
@@ -1715,7 +1715,7 @@ int virtio_rdma_req_notify_cq(struct ib_cq *ibcq,
 		
 		kfree(cmd);
 		kfree(rsp);
-		if (!rc)
+		if (rc)
 			return -EIO;
 	}
 

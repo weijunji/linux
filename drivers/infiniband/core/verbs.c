@@ -1702,8 +1702,9 @@ static int _ib_modify_qp(struct ib_qp *qp, struct ib_qp_attr *attr,
 			 * If the user provided the qp_attr then we have to
 			 * resolve it. Kerne users have to provide already
 			 * resolved rdma_ah_attr's.
+			 * There is no need for virtio rdma to resolve.
 			 */
-			if (udata) {
+			if (udata && !rdma_protocol_virtio(qp->device, port)) {
 				ret = ib_resolve_eth_dmac(qp->device,
 							  &attr->ah_attr);
 				if (ret)
