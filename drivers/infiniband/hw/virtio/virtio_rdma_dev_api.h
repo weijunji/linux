@@ -66,7 +66,7 @@ struct virtio_rdma_config {
     __le16         max_pkeys;
 	__u8           local_ca_ack_delay;
 
-    __u8           reserved[128];
+    __u8           reserved[64];
 } __attribute__((packed));
 
 #define VIRTIO_RDMA_CTRL_OK	0
