@@ -106,6 +106,18 @@ struct cmd_query_port {
 	__u32 port;
 };
 
+struct cmd_add_gid {
+	__u8 gid[16];
+	__u32 gid_type;
+	__u16 index;
+	__u32 port_num;
+};
+
+struct cmd_del_gid {
+	__u16 index;
+	__u32 port_num;
+};
+
 struct cmd_create_cq {
 	__u32 cqe;
 };
