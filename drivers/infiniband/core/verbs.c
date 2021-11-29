@@ -1704,7 +1704,7 @@ static int _ib_modify_qp(struct ib_qp *qp, struct ib_qp_attr *attr,
 			 * resolved rdma_ah_attr's.
 			 * There is no need for virtio rdma to resolve.
 			 */
-			if (udata && !rdma_protocol_virtio(qp->device, port)) {
+			if (udata) {
 				ret = ib_resolve_eth_dmac(qp->device,
 							  &attr->ah_attr);
 				if (ret)

@@ -960,9 +960,6 @@ int rdma_query_gid(struct ib_device *device, u32 port_num,
 	if (!rdma_is_port_valid(device, port_num))
 		return -EINVAL;
 
-	if (rdma_protocol_virtio(device, port_num))
-		return device->ops.query_gid(device, port_num, index, gid);
-
 	table = rdma_gid_table(device, port_num);
 	read_lock_irqsave(&table->rwlock, flags);
 
