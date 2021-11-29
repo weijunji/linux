@@ -157,8 +157,9 @@ struct rsp_create_mr {
 
 struct cmd_map_mr_sg {
 	__u32 mrn;
-	__u64 start;
 	__u32 npages;
+	__u64 start;
+	__u64 length;
 
 	__u64 pages;
 };
@@ -193,6 +194,7 @@ struct cmd_dereg_mr {
 struct cmd_create_qp {
     __u32 pdn;
     __u8 qp_type;
+	__u8 sq_sig_type;
     __u32 max_send_wr;
     __u32 max_send_sge;
     __u32 send_cqn;
@@ -201,6 +203,8 @@ struct cmd_create_qp {
     __u32 recv_cqn;
     __u8 is_srq;
     __u32 srq_handle;
+
+	__u32 max_inline_data;
 };
 
 struct rsp_create_qp {
@@ -262,7 +266,7 @@ struct cmd_req_notify {
 };
 
 struct rsp_req_notify {
-	__u32 status;
+	__u32 missed;
 };
 
 #endif

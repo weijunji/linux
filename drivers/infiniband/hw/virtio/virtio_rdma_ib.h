@@ -91,8 +91,10 @@ struct virtio_rdma_mr {
 	u64 iova;
 	u64 size;
 
-	u64 *pages;
-	dma_addr_t dma_pages;
+	u64 **pages; // l2 page tbls dma address (l1 page tbl kernel adderess)
+	u64 **pages_k; // l2 page tbls kernel address
+	dma_addr_t dma_pages; // l1 page tbl dma address
+
 	u32 npages;
 	u32 max_pages;
 };
@@ -143,11 +145,14 @@ struct virtio_rdma_global_route {
 
 struct virtio_rdma_ah_attr {
 	struct virtio_rdma_global_route	grh;
-	uint16_t			dlid;
-	uint8_t				sl;
-	uint8_t				src_path_bits;
-	uint8_t				static_rate;
-	uint8_t				port_num;
+	uint8_t		sl;
+	uint8_t		static_rate;
+	uint8_t		port_num;
+	uint8_t		ah_flags;
+	uint8_t		type;
+	union {
+		struct roce_ah_attr roce;
+	};
 };
 
 struct virtio_rdma_qp_cap {

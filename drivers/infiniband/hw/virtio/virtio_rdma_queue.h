@@ -27,4 +27,7 @@ struct scatterlist;
 
 void virtio_rdma_cq_ack(struct virtqueue *vq);
 
+int virtio_rdma_qp_chk_init(struct virtio_rdma_dev *dev,
+							struct ib_qp_init_attr *init);
+
 #endif

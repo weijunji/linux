@@ -45,8 +45,6 @@ struct virtio_rdma_dev {
 	struct virtio_rdma_cq** cqs;
 
 	struct virtio_rdma_vq* qp_vqs;
-	int *qp_vq_using;
-	spinlock_t qp_using_lock;
 
 	atomic_t num_qp;
 	atomic_t num_cq;

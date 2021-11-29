@@ -103,23 +103,23 @@ void rdma_ah_attr_to_virtio_rdma(struct virtio_rdma_ah_attr *dst,
 			    const struct rdma_ah_attr *src)
 {
 	ib_global_route_to_virtio_rdma(&dst->grh, rdma_ah_read_grh(src));
-	// FIXME: this should be roce->dmac
-	dst->dlid = rdma_ah_get_dlid(src);
 	dst->sl = rdma_ah_get_sl(src);
-	dst->src_path_bits = rdma_ah_get_path_bits(src);
 	dst->static_rate = rdma_ah_get_static_rate(src);
 	dst->port_num = rdma_ah_get_port_num(src);
+	dst->ah_flags = rdma_ah_get_ah_flags(src);
+	dst->type = src->type;
+	memcpy(&dst->roce, &src->roce, sizeof(struct roce_ah_attr));
 }
 
 void virtio_rdma_to_rdma_ah_attr(struct rdma_ah_attr *dst,
 			    const struct virtio_rdma_ah_attr *src)
 {
 	virtio_rdma_to_ib_global_route(rdma_ah_retrieve_grh(dst), &src->grh);
-	rdma_ah_set_dlid(dst, src->dlid);
 	rdma_ah_set_sl(dst, src->sl);
-	rdma_ah_set_path_bits(dst, src->src_path_bits);
 	rdma_ah_set_static_rate(dst, src->static_rate);
 	rdma_ah_set_port_num(dst, src->port_num);
+	rdma_ah_set_ah_flags(dst, src->ah_flags);
+	memcpy(&dst->roce, &src->roce, sizeof(struct roce_ah_attr));
 }
 
 static int virtio_rdma_exec_cmd(struct virtio_rdma_dev *di, int cmd,
@@ -473,7 +473,6 @@ static int virtio_rdma_alloc_pd(struct ib_pd *ibpd, struct ib_udata *udata)
 	struct virtio_rdma_ucontext *context = rdma_udata_to_drv_context(
 		udata, struct virtio_rdma_ucontext, ibucontext);
 
-	// TODO: Check MAX_PD
 	cmd = kmalloc(sizeof(*cmd), GFP_ATOMIC);
 	if (!cmd)
 		return -ENOMEM;
@@ -510,8 +509,6 @@ static int virtio_rdma_alloc_pd(struct ib_pd *ibpd, struct ib_udata *udata)
 out:
 	kfree(rsp);
 	kfree(cmd);
-
-	pr_info("%s: rc=%d\n", __func__, rc);
 	return rc;
 }
 
@@ -567,8 +564,6 @@ struct ib_mr *virtio_rdma_get_dma_mr(struct ib_pd *pd, int flags)
 	sg_init_one(&in, cmd, sizeof(*cmd));
 	sg_init_one(&out, rsp, sizeof(*rsp));
 
-	pr_warn("Not support DMA mr now\n");
-
 	rc = virtio_rdma_exec_cmd(to_vdev(pd->device), VIRTIO_CMD_GET_DMA_MR,
 				  &in, &out);
 	pr_info("%s: mr_handle=0x%x\n", __func__, rsp->mrn);
@@ -584,11 +579,43 @@ struct ib_mr *virtio_rdma_get_dma_mr(struct ib_pd *pd, int flags)
 	mr->ibmr.rkey = rsp->rkey;
 	mr->type = VIRTIO_RDMA_TYPE_KERNEL;
 	to_vpd(pd)->type = VIRTIO_RDMA_TYPE_KERNEL;
+	mr->pages = NULL;
+	mr->pages_k = NULL;
 
 	kfree(cmd);
 	kfree(rsp);
 
 	return &mr->ibmr;
+}
+
+static uint64_t** virtio_rdma_init_page_tbl(struct virtio_rdma_dev *dev,
+			uint32_t npages, uint64_t*** pages_dma, dma_addr_t* dma_pages_p) {
+	uint32_t nl2 = npages == 0 ? 0 : (npages - 1) / 512 + 1;
+	uint64_t **pages;
+	uint64_t **pages_k;
+	dma_addr_t dma_pages, l2_dma_addr;
+	uint32_t i;
+
+	// l1
+	pages = dma_alloc_coherent(dev->vdev->dev.parent, PAGE_SIZE, &dma_pages, GFP_KERNEL);
+	if (pages == NULL) {
+		return NULL;
+	}
+	// l2
+	pages_k = kzalloc(PAGE_SIZE, GFP_KERNEL);
+	for (i = 0; i < nl2; i++) {
+		pages_k[i] = dma_alloc_coherent(dev->vdev->dev.parent, PAGE_SIZE, &l2_dma_addr, GFP_KERNEL);
+		pages[i] = (uint64_t *)l2_dma_addr;
+		if(pages_k[i] == NULL)
+			goto err;
+	}
+
+	*pages_dma = pages;
+	*dma_pages_p = dma_pages;
+	return pages_k;
+err:
+	// TODO: clean up
+	return NULL;
 }
 
 static struct ib_mr *virtio_rdma_alloc_mr(struct ib_pd *pd, enum ib_mr_type mr_type,
@@ -622,9 +649,9 @@ static struct ib_mr *virtio_rdma_alloc_mr(struct ib_pd *pd, enum ib_mr_type mr_t
 		goto err_rsp;
 
 	 // FIXME: only support PAGE_SIZE/8 sg;
-	mr->pages = dma_alloc_coherent(dev->vdev->dev.parent, PAGE_SIZE, &mr->dma_pages, GFP_KERNEL);
-	if (!mr->pages) {
-		pr_err("dma alloc pages failed\n");
+	mr->pages_k = virtio_rdma_init_page_tbl(dev, max_num_sg, &mr->pages, &mr->dma_pages);
+	if (!mr->pages_k) {
+		pr_err("alloc page_tables failed\n");
 		goto err_pages;
 	}
 	mr->max_pages = max_num_sg;
@@ -681,7 +708,9 @@ static int virtio_rdma_set_page(struct ib_mr *ibmr, u64 addr)
 		pr_err("vmalloc addr is not support\n");
 		return -EINVAL;
 	}
-	mr->pages[mr->npages++] = virt_to_phys((void*)addr);
+	mr->pages_k[mr->npages / 512][mr->npages % 512] = virt_to_phys((void*)addr);
+	pr_info("set page %llx\n", addr);
+	mr->npages++;
 	return 0;
 }
 
@@ -715,7 +744,8 @@ int virtio_rdma_map_mr_sg(struct ib_mr *ibmr, struct scatterlist *sg,
 	pr_info("%s: start %llx npages %d\n", __func__, sg[0].dma_address, mr->npages);
 
 	cmd->mrn = mr->mr_handle;
-	cmd->start = (uint64_t)phys_to_virt(mr->pages[0]);
+	cmd->start = (uint64_t)ibmr->iova;
+	cmd->length = ibmr->length;
 	cmd->npages = mr->npages;
 	cmd->pages = mr->dma_pages;
 
@@ -762,8 +792,8 @@ struct ib_mr *virtio_rdma_reg_user_mr(struct ib_pd *pd, u64 start, u64 length,
 	}
 
 	npages = ib_umem_num_pages(umem);
-	if (npages < 0) {
-		pr_err("npages < 0");
+	if (npages < 0 || npages > 512 * 512) { // two level page table
+		pr_err("bad npages");
 		ret = ERR_PTR(-EINVAL);
 		goto out;
 	}
@@ -784,9 +814,8 @@ struct ib_mr *virtio_rdma_reg_user_mr(struct ib_pd *pd, u64 start, u64 length,
 		goto err;
 	}
 
-	// TODO: change page size to needed
-	mr->pages = dma_alloc_coherent(dev->vdev->dev.parent, PAGE_SIZE, &mr->dma_pages, GFP_KERNEL);
-	if (!mr->pages) {
+	mr->pages_k = virtio_rdma_init_page_tbl(dev, npages, &mr->pages, &mr->dma_pages);
+	if (!mr->pages_k) {
 		pr_err("dma alloc pages failed\n");
 		goto err;
 	}
@@ -796,12 +825,11 @@ struct ib_mr *virtio_rdma_reg_user_mr(struct ib_pd *pd, u64 start, u64 length,
 	mr->size = length;
 	mr->umem = umem;
 
-	// TODO: test pages
 	mr->npages = 0;
 	for_each_sg_dma_page(umem->sg_head.sgl, &sg_iter, umem->nmap, 0) {
 		dma_addr_t addr = sg_page_iter_dma_address(&sg_iter);
-		mr->pages[mr->npages] = virt_to_phys((void*)addr);
-		pr_info("set page %llx", addr);
+		mr->pages_k[mr->npages / 512][mr->npages % 512] = virt_to_phys((void*)addr);
+		pr_info("set page %llx\n", addr);
 		mr->npages++;
 	}
 
@@ -851,6 +879,7 @@ int virtio_rdma_dereg_mr(struct ib_mr *ibmr, struct ib_udata *udata)
 	struct scatterlist in;
 	struct cmd_dereg_mr *cmd;
 	int rc = -ENOMEM;
+	int i;
 
 	cmd = kmalloc(sizeof(*cmd), GFP_ATOMIC);
 	if (!cmd)
@@ -868,30 +897,24 @@ int virtio_rdma_dereg_mr(struct ib_mr *ibmr, struct ib_udata *udata)
 		goto out;
 	}
 
-	dma_free_coherent(to_vdev(ibmr->device)->vdev->dev.parent, PAGE_SIZE, &mr->pages, GFP_KERNEL);
+	if (mr->pages_k != NULL) {
+		for (i = 0; i < 512; i++) {
+			if (mr->pages_k[i] != NULL)
+				dma_free_coherent(to_vdev(ibmr->device)->vdev->dev.parent,
+								PAGE_SIZE, mr->pages_k[i], GFP_KERNEL);
+			else
+				break;
+		}
+		kfree(mr->pages_k);
+		dma_free_coherent(to_vdev(ibmr->device)->vdev->dev.parent, PAGE_SIZE,
+						mr->pages, GFP_KERNEL);
+	}
+
 	if (mr->type == VIRTIO_RDMA_TYPE_USER)
 		ib_umem_release(mr->umem);
 
 out:
 	kfree(cmd);
-	return rc;
-}
-
-static int find_qp_vq(struct virtio_rdma_dev *dev, uint32_t qpn) {
-	int rc = -1, i;
-	unsigned long flags;
-	uint32_t max_qp = dev->ib_dev.attrs.max_qp;
-
-	spin_lock_irqsave(&dev->qp_using_lock, flags);
-	for(i = 0; i < max_qp; i++) {
-		if (dev->qp_vq_using[i] == -1) {
-			rc = i;
-			dev->qp_vq_using[i] = qpn;
-			goto found;
-		}
-	}
-found:
-	spin_unlock_irqrestore(&dev->qp_using_lock, flags);
 	return rc;
 }
 
@@ -949,7 +972,10 @@ struct ib_qp *virtio_rdma_create_qp(struct ib_pd *ibpd,
 	struct ib_qp *ret;
 
 	if (!atomic_add_unless(&vdev->num_qp, 1, vdev->ib_dev.attrs.max_qp))
-        return ERR_PTR(-ENOMEM);
+		return ERR_PTR(-ENOMEM);
+
+	if (virtio_rdma_qp_chk_init(vdev, attr))
+		return ERR_PTR(-EINVAL);
 
 	cmd = kmalloc(sizeof(*cmd), GFP_ATOMIC);
 	if (!cmd)
@@ -970,6 +996,7 @@ struct ib_qp *virtio_rdma_create_qp(struct ib_pd *ibpd,
 
 	cmd->pdn = to_vpd(ibpd)->pd_handle;
 	cmd->qp_type = attr->qp_type;
+	cmd->sq_sig_type = attr->sq_sig_type;
 	cmd->max_send_wr = attr->cap.max_send_wr;
 	cmd->max_send_sge = attr->cap.max_send_sge;
 	cmd->send_cqn = to_vcq(attr->send_cq)->cq_handle;
@@ -978,6 +1005,7 @@ struct ib_qp *virtio_rdma_create_qp(struct ib_pd *ibpd,
 	cmd->recv_cqn = to_vcq(attr->recv_cq)->cq_handle;
 	cmd->is_srq = !!attr->srq;
 	cmd->srq_handle = 0; // Not support srq now
+	cmd->max_inline_data = attr->cap.max_inline_data;
 
 	sg_init_one(&in, cmd, sizeof(*cmd));
 	printk("%s: pdn %d\n", __func__, cmd->pdn);
@@ -996,7 +1024,7 @@ struct ib_qp *virtio_rdma_create_qp(struct ib_pd *ibpd,
 	vqp->qp_handle = rsp->qpn;
 	vqp->ibqp.qp_num = rsp->qpn;
 
-	vqn = find_qp_vq(vdev, vqp->qp_handle);
+	vqn = rsp->qpn;
 	vqp->sq = &vdev->qp_vqs[vqn * 2];
 	vqp->rq = &vdev->qp_vqs[vqn * 2 + 1];
 
@@ -1097,8 +1125,6 @@ int virtio_rdma_destroy_qp(struct ib_qp *ibqp, struct ib_udata *udata)
 	}
 
 	atomic_dec(&vdev->num_qp);
-
-	smp_store_mb(vdev->qp_vq_using[vqp->sq->idx / 2], -1);
 
 	kfree(cmd);
 	return rc;
@@ -1459,6 +1485,7 @@ out:
 	init_attr->srq = vqp->ibqp.srq;
 	init_attr->xrcd = NULL;
 	init_attr->cap = attr->cap;
+	// FIXME: not zero
 	init_attr->sq_sig_type = 0;
 	init_attr->qp_type = vqp->ibqp.qp_type;
 	init_attr->create_flags = 0;
@@ -1755,8 +1782,9 @@ int virtio_rdma_req_notify_cq(struct ib_cq *ibcq,
 			return -EIO;
 	}
 
+	// FIXME: not support in userspace
 	if (flags & IB_CQ_REPORT_MISSED_EVENTS)
-		return vcq->vq->vq->num_free;
+		return -EOPNOTSUPP;
 
 	return 0;
 }

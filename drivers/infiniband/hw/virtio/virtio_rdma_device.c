@@ -92,11 +92,6 @@ int init_device(struct virtio_rdma_dev *dev)
 	dev->cqs = kcalloc(max_cq, sizeof(*dev->cqs), GFP_ATOMIC);
 
 	dev->qp_vqs = kcalloc(max_qp * 2, sizeof(*dev->qp_vqs), GFP_ATOMIC);
-	dev->qp_vq_using = kzalloc(max_qp * sizeof(*dev->qp_vq_using), GFP_ATOMIC);
-	for (i = 0; i < max_qp; i++) {
-		dev->qp_vq_using[i] = -1;
-	}
-	spin_lock_init(&dev->qp_using_lock);
 
 	vqs = kmalloc_array(total_vqs, sizeof(*vqs), GFP_ATOMIC);
 	if (!vqs)
