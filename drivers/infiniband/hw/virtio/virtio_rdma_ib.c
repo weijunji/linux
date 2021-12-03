@@ -1553,13 +1553,14 @@ int virtio_rdma_poll_cq(struct ib_cq *ibcq, int num_entries, struct ib_wc *wc)
 		wc[i].vendor_err = cqe->vendor_err;
 		wc[i].byte_len = cqe->byte_len;
 		// TODO: wc[i].qp
-		wc[i].ex.imm_data = cqe->imm_data;
+		wc[i].ex.imm_data = cqe->ex.imm_data;
 		wc[i].src_qp = cqe->src_qp;
 		wc[i].slid = cqe->slid;
 		wc[i].wc_flags = cqe->wc_flags;
 		wc[i].pkey_index = cqe->pkey_index;
 		wc[i].sl = cqe->sl;
 		wc[i].dlid_path_bits = cqe->dlid_path_bits;
+		wc[i].port_num = cqe->port_num;
 
 		sg_init_one(&sg, cqe, sizeof(*cqe));
 		virtqueue_add_inbuf(vq, &sg, 1, cqe, GFP_KERNEL);
@@ -1625,6 +1626,19 @@ out:
 	return rc;
 }
 
+static void copy_inline_data_to_wqe(struct virtio_rdma_cmd_post_send *wqe,
+				    const struct ib_send_wr *ibwr)
+{
+	struct ib_sge *sge = ibwr->sg_list;
+	char *p = (char*)wqe + sizeof(*wqe);
+	int i;
+
+	for (i = 0; i < ibwr->num_sge; i++, sge++) {
+		memcpy(p, (void *)(uintptr_t)sge->addr, sge->length);
+		p += sge->length;
+	}
+}
+
 int virtio_rdma_post_send(struct ib_qp *ibqp, const struct ib_send_wr *wr,
 			  const struct ib_send_wr **bad_wr)
 {
@@ -1652,6 +1666,7 @@ int virtio_rdma_post_send(struct ib_qp *ibqp, const struct ib_send_wr *wr,
 			kfree(ptr);
 		}
 
+		// FIXME: space for inline data
 		sgl_len = sizeof(struct virtio_rdma_sge) * wr->num_sge;
 		cmd = kzalloc(sizeof(*cmd) + sgl_len, GFP_ATOMIC);
 		if (!cmd) {
@@ -1721,7 +1736,12 @@ int virtio_rdma_post_send(struct ib_qp *ibqp, const struct ib_send_wr *wr,
 			rc = -EINVAL;
 			goto out_err;
 		}
-		memcpy((char*)cmd + sizeof(*cmd), wr->sg_list, sgl_len);
+
+		// TODO: check max_inline_data
+		if (unlikely(wr->send_flags & IB_SEND_INLINE))
+			copy_inline_data_to_wqe(cmd, wr);
+		else
+			memcpy((char*)cmd + sizeof(*cmd), wr->sg_list, sgl_len);
 
 		sg_init_one(&hdr, cmd, sizeof(*cmd) + sgl_len);
 		sgs[0] = &hdr;

@@ -83,7 +83,10 @@ struct virtio_rdma_cqe {
 	__u32 opcode;
 	__u32 vendor_err;
 	__u32 byte_len;
-	__u32 imm_data;
+	union {
+		__u32 imm_data;
+		__u32 invalidate_rkey;
+	}ex;
 	__u32 qp_num;
 	__u32 src_qp;
 	int	 wc_flags;
@@ -91,6 +94,7 @@ struct virtio_rdma_cqe {
 	__u16 slid;
 	__u8 sl;
 	__u8 dlid_path_bits;
+    __u8 port_num;
 };
 
 enum {
