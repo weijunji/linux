@@ -703,11 +703,8 @@ static int virtio_rdma_set_page(struct ib_mr *ibmr, u64 addr)
 	if (mr->npages == mr->max_pages)
 		return -ENOMEM;
 
-	if (is_vmalloc_addr((void*)addr)) {
-		pr_err("vmalloc addr is not support\n");
-		return -EINVAL;
-	}
-	mr->pages_k[mr->npages / 512][mr->npages % 512] = virt_to_phys((void*)addr);
+	// FIXME: no need to use virt_to_phys here since we set dma_device in ib_register_device?
+	mr->pages_k[mr->npages / 512][mr->npages % 512] = addr;
 	pr_info("set page %llx\n", addr);
 	mr->npages++;
 	return 0;
@@ -827,7 +824,7 @@ struct ib_mr *virtio_rdma_reg_user_mr(struct ib_pd *pd, u64 start, u64 length,
 	mr->npages = 0;
 	for_each_sg_dma_page(umem->sg_head.sgl, &sg_iter, umem->nmap, 0) {
 		dma_addr_t addr = sg_page_iter_dma_address(&sg_iter);
-		mr->pages_k[mr->npages / 512][mr->npages % 512] = virt_to_phys((void*)addr);
+		mr->pages_k[mr->npages / 512][mr->npages % 512] = addr;
 		pr_info("set page %llx\n", addr);
 		mr->npages++;
 	}
@@ -1541,8 +1538,8 @@ int virtio_rdma_post_recv(struct ib_qp *ibqp, const struct ib_recv_wr *wr,
 	unsigned int sgl_len;
 	void* ptr;
 
-	if (vqp->ibqp.qp_type == IB_QPT_GSI || vqp->ibqp.qp_type == IB_QPT_SMI)
-		return 0;
+	if (vqp->ibqp.qp_type == IB_QPT_SMI)
+		return -EOPNOTSUPP;
 
 	spin_lock(&vqp->rq->lock);
 
@@ -1863,12 +1860,13 @@ int virtio_rdma_register_ib_device(struct virtio_rdma_dev *ri)
 	dev->node_type = RDMA_NODE_IB_CA;
 	dev->uverbs_cmd_mask |=
 		(1ull << IB_USER_VERBS_CMD_POST_SEND)|
-		(1ull << IB_USER_VERBS_CMD_POST_RECV);
+		(1ull << IB_USER_VERBS_CMD_POST_RECV)|
+		(1ull << IB_USER_VERBS_CMD_REQ_NOTIFY_CQ);
 
     ib_set_device_ops(dev, &virtio_rdma_dev_ops);
 	ib_device_set_netdev(dev, ri->netdev, 1);
 
-	rc = ib_register_device(dev, "virtio_rdma%d", NULL);
+	rc = ib_register_device(dev, "virtio_rdma%d", ri->vdev->dev.parent);
 
 	memcpy(&dev->node_guid, dev->name, 6);
 	return rc;
