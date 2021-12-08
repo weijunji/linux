@@ -49,10 +49,9 @@ static const char* cmd_name[] = {
 	[VIRTIO_CMD_REG_USER_MR] = "VIRTIO_CMD_REG_USER_MR",
 	[VIRTIO_CMD_DEREG_MR] = "VIRTIO_CMD_DEREG_MR",
 	[VIRTIO_CMD_CREATE_QP] = "VIRTIO_CMD_CREATE_QP",
-    [VIRTIO_CMD_MODIFY_QP] = "VIRTIO_CMD_MODIFY_QP",
+	[VIRTIO_CMD_MODIFY_QP] = "VIRTIO_CMD_MODIFY_QP",
 	[VIRTIO_CMD_QUERY_QP] = "VIRTIO_CMD_QUERY_QP",
-    [VIRTIO_CMD_DESTROY_QP] = "VIRTIO_CMD_DESTROY_QP",
-	[VIRTIO_CMD_QUERY_GID] = "VIRTIO_CMD_QUERY_GID",
+	[VIRTIO_CMD_DESTROY_QP] = "VIRTIO_CMD_DESTROY_QP",
 	[VIRTIO_CMD_CREATE_UC] = "VIRTIO_CMD_CREATE_UC",
 	[VIRTIO_CMD_DEALLOC_UC] = "VIRTIO_CMD_DEALLOC_UC",
 	[VIRTIO_CMD_QUERY_PKEY] = "VIRTIO_CMD_QUERY_PKEY",
@@ -1130,44 +1129,6 @@ int virtio_rdma_destroy_qp(struct ib_qp *ibqp, struct ib_udata *udata)
 	return rc;
 }
 
-int virtio_rdma_query_gid(struct ib_device *ibdev, u32 port, int index,
-			  union ib_gid *gid)
-{
-	struct scatterlist in, *data;
-	struct cmd_query_gid *cmd;
-	struct ib_gid_attr gid_attr;
-	int rc;
-
-	printk("%s: port %d, index %d\n", __func__, port, index);
-
-	cmd = kmalloc(sizeof(*cmd), GFP_ATOMIC);
-	if (!cmd)
-		return -ENOMEM;
-
-	data = init_sg(gid, sizeof(*gid));
-	if (!data) {
-		kfree(cmd);
-		return -ENOMEM;
-	}
-
-	cmd->port = port;
-	cmd->index = index;
-	sg_init_one(&in, cmd, sizeof(*cmd));
-
-	rc = virtio_rdma_exec_cmd(to_vdev(ibdev), VIRTIO_CMD_QUERY_GID, &in,
-				  data);
-
-	if (!rc) {
-		gid_attr.ndev = to_vdev(ibdev)->netdev;
-		gid_attr.gid_type = IB_GID_TYPE_ROCE_UDP_ENCAP;
-		ib_cache_gid_add(ibdev, port, gid, &gid_attr);
-	}
-
-	kfree(data);
-	kfree(cmd);
-	return rc;
-}
-
 static int virtio_rdma_add_gid(const struct ib_gid_attr *attr, void **context)
 {
 	struct cmd_add_gid *cmd;
@@ -1856,7 +1817,6 @@ static const struct ib_device_ops virtio_rdma_dev_ops = {
 	.dealloc_pd = virtio_rdma_dealloc_pd,
 	.get_dma_mr = virtio_rdma_get_dma_mr,
 	.create_qp = virtio_rdma_create_qp,
-	.query_gid = virtio_rdma_query_gid,
 	.add_gid = virtio_rdma_add_gid,
 	.alloc_mr = virtio_rdma_alloc_mr,
 	.alloc_ucontext = virtio_rdma_alloc_ucontext,
