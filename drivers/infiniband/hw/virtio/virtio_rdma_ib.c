@@ -425,8 +425,6 @@ static int virtio_rdma_destroy_cq(struct ib_cq *cq, struct ib_udata *udata)
 	struct scatterlist in;
 	struct cmd_destroy_cq *cmd;
 
-	unsigned tmp;
-
 	cmd = kmalloc(sizeof(*cmd), GFP_ATOMIC);
 	if (!cmd)
 		return -ENOMEM;
@@ -443,7 +441,7 @@ static int virtio_rdma_destroy_cq(struct ib_cq *cq, struct ib_udata *udata)
 	 * prepare for next use.
 	 */
 	if (!udata)
-		while(virtqueue_get_buf(vcq->vq->vq, &tmp));
+		while(virtqueue_detach_unused_buf(vcq->vq->vq));
 
 	atomic_dec(&to_vdev(cq->device)->num_cq);
 	virtqueue_enable_cb(vcq->vq->vq);

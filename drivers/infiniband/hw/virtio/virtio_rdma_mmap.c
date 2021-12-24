@@ -61,7 +61,7 @@ int virtio_rdma_mmap(struct ib_ucontext *ctx, struct vm_area_struct *vma)
 
 		// vring
 		rc = remap_pfn_range(vma, vma->vm_start,
-			       page_to_pfn(virt_to_page((virtqueue_get_vring(entry->queue)->desc))),
+			       page_to_pfn(virt_to_page(virtqueue_get_vring(entry->queue)->desc)),
 			       vq_size, vma->vm_page_prot);
 
 		// user buffer
