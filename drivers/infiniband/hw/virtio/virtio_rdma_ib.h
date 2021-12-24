@@ -116,6 +116,8 @@ struct virtio_rdma_cq {
 
 	spinlock_t lock;
 	struct virtio_rdma_cqe *queue;
+	size_t queue_size;
+	dma_addr_t dma_addr;
 	u32 num_cqe;
 };
 
@@ -127,9 +129,13 @@ struct virtio_rdma_qp {
 
 	struct virtio_rdma_vq *sq;
 	void* usq_buf;
+	size_t usq_buf_size;
+	dma_addr_t usq_dma_addr;
 
 	struct virtio_rdma_vq *rq;
 	void* urq_buf;
+	size_t urq_buf_size;
+	dma_addr_t urq_dma_addr;
 
 	struct virtio_rdma_user_mmap_entry* sq_entry;
 	struct virtio_rdma_user_mmap_entry* rq_entry;

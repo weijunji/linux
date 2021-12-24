@@ -310,40 +310,32 @@ static int virtio_rdma_create_cq(struct ib_cq *ibcq,
 	struct cmd_create_cq *cmd;
 	struct rsp_create_cq *rsp;
 	struct scatterlist sg;
-	int rc, i;
+	int i, rc = -ENOMEM;
 	int entries = attr->cqe;
-	int total_size;
-	struct virtio_rdma_user_mmap_entry* entry;
+	size_t total_size;
+	struct virtio_rdma_user_mmap_entry* entry = NULL;
 
 	if (!atomic_add_unless(&vdev->num_cq, 1, ibcq->device->attrs.max_cq))
 		return -ENOMEM;
 
-	total_size = PAGE_ALIGN(entries * sizeof(*vcq->queue));
-	vcq->queue = alloc_pages_exact(total_size, GFP_KERNEL);
+	total_size = vcq->queue_size = PAGE_ALIGN(entries * sizeof(*vcq->queue));
+	vcq->queue = dma_alloc_coherent(vdev->vdev->dev.parent, vcq->queue_size,
+					&vcq->dma_addr, GFP_KERNEL);
 	if (!vcq->queue)
 		return -ENOMEM;
 
 	cmd = kmalloc(sizeof(*cmd), GFP_ATOMIC);
-	if (!cmd) {
-		kfree(vcq->queue);
-		return -ENOMEM;
-	}
+	if (!cmd)
+		goto err_cmd;
 
 	rsp = kmalloc(sizeof(*rsp), GFP_ATOMIC);
-	if (!rsp) {
-		kfree(vcq->queue);
-		kfree(cmd);
-		return -ENOMEM;
-	}
+	if (!rsp)
+		goto err_rsp;
 	
 	if (udata) {
 		entry = kzalloc(sizeof(*entry), GFP_ATOMIC);
-		if (!entry) {
-			kfree(vcq->queue);
-			kfree(cmd);
-			kfree(rsp);
-			return -ENOMEM;
-		}
+		if (!entry)
+			goto err;
 	}
 
 	cmd->cqe = attr->cqe;
@@ -352,10 +344,8 @@ static int virtio_rdma_create_cq(struct ib_cq *ibcq,
 
 	rc = virtio_rdma_exec_cmd(vdev, VIRTIO_CMD_CREATE_CQ, &in,
 				  &out);
-	if (rc) {
-		kfree(vcq->queue);
-		goto out;
-	}
+	if (rc)
+		goto err;
 
 	vcq->cq_handle = rsp->cqn;
 	vcq->ibcq.cqe = entries;
@@ -371,16 +361,22 @@ static int virtio_rdma_create_cq(struct ib_cq *ibcq,
 		entry->type = VIRTIO_RDMA_MMAP_CQ;
 		entry->queue = vcq->vq->vq;
 		entry->ubuf = vcq->queue;
-		entry->ubuf_size = total_size;
+		entry->ubuf_size = vcq->queue_size;
 
+		/* Todo: Don't depend on vq_align */
 		uresp.vq_align = SMP_CACHE_BYTES;
+//		uresp.avail_off = virtqueue_get_avail_addr(vcq->vq->vq) -
+//					virtqueue_get_desc_addr(vcq->vq->vq);
+//		uresp.used_off = virtqueue_get_used_addr(vcq->vq->vq) -
+//					virtqueue_get_desc_addr(vcq->vq->vq);
+
 		uresp.vq_size = PAGE_ALIGN(vring_size(virtqueue_get_vring_size(vcq->vq->vq), SMP_CACHE_BYTES));
 		total_size += uresp.vq_size;
 
 		rc = rdma_user_mmap_entry_insert(&uctx->ibucontext, &entry->rdma_entry,
 			total_size);
 		if (rc)
-			goto out_err;
+			goto err;
 
 		uresp.offset = rdma_user_mmap_get_offset(&entry->rdma_entry);
 		uresp.cq_phys_addr = virt_to_phys(vcq->queue);
@@ -390,11 +386,11 @@ static int virtio_rdma_create_cq(struct ib_cq *ibcq,
 
 		if (udata->outlen < sizeof(uresp)) {
 			rc = -EINVAL;
-			goto out_err;
+			goto err;
 		}
 		rc = ib_copy_to_udata(udata, &uresp, sizeof(uresp));
 		if (rc)
-			goto out_err;
+			goto err;
 
 		vcq->entry = &entry->rdma_entry;
 	} else {
@@ -406,21 +402,26 @@ static int virtio_rdma_create_cq(struct ib_cq *ibcq,
 
 	spin_lock_init(&vcq->lock);
 
-	goto out;
-
-out_err:
-	if (entry)
-		kfree(entry);
-	kfree(vcq->queue);
-out:
 	kfree(rsp);
 	kfree(cmd);
+	return 0;
+
+err:
+	if (entry)
+		kfree(entry);
+	kfree(rsp);
+err_rsp:
+	kfree(cmd);
+err_cmd:
+	dma_free_coherent(vdev->vdev->dev.parent, vcq->queue_size,
+			  vcq->queue, vcq->dma_addr);
 	return rc;
 }
 
 static int virtio_rdma_destroy_cq(struct ib_cq *cq, struct ib_udata *udata)
 {
-	struct virtio_rdma_cq *vcq;
+	struct virtio_rdma_cq *vcq = to_vcq(cq);
+	struct virtio_rdma_dev *vdev = to_vdev(cq->device);
 	struct scatterlist in;
 	struct cmd_destroy_cq *cmd;
 
@@ -429,8 +430,6 @@ static int virtio_rdma_destroy_cq(struct ib_cq *cq, struct ib_udata *udata)
 	cmd = kmalloc(sizeof(*cmd), GFP_ATOMIC);
 	if (!cmd)
 		return -ENOMEM;
-
-	vcq = to_vcq(cq);
 
 	cmd->cqn = vcq->cq_handle;
 	sg_init_one(&in, cmd, sizeof(*cmd));
@@ -454,7 +453,8 @@ static int virtio_rdma_destroy_cq(struct ib_cq *cq, struct ib_udata *udata)
 
 	to_vdev(cq->device)->cqs[vcq->cq_handle] = NULL;
 
-	kfree(vcq->queue);
+	dma_free_coherent(vdev->vdev->dev.parent, vcq->queue_size,
+					vcq->queue, vcq->dma_addr);
 	kfree(cmd);
 	return 0;
 }
@@ -703,7 +703,6 @@ static int virtio_rdma_set_page(struct ib_mr *ibmr, u64 addr)
 	if (mr->npages == mr->max_pages)
 		return -ENOMEM;
 
-	// FIXME: no need to use virt_to_phys here since we set dma_device in ib_register_device?
 	mr->pages_k[mr->npages / 512][mr->npages % 512] = addr;
 	pr_info("set page %llx\n", addr);
 	mr->npages++;
@@ -748,6 +747,7 @@ int virtio_rdma_map_mr_sg(struct ib_mr *ibmr, struct scatterlist *sg,
 	sg_init_one(&in, cmd, sizeof(*cmd));
 	sg_init_one(&out, rsp, sizeof(*rsp));
 
+	// TODO: no need to call
 	rc = virtio_rdma_exec_cmd(to_vdev(ibmr->device), VIRTIO_CMD_MAP_MR_SG,
 				  &in, &out);
 
@@ -914,9 +914,11 @@ out:
 	return rc;
 }
 
-static void* virtio_rdma_init_mmap_entry(struct virtqueue *vq,
-           struct virtio_rdma_user_mmap_entry** entry_, int buf_size,
-		   struct virtio_rdma_ucontext* vctx, __u64* size, __u32* vq_size)
+static void* virtio_rdma_init_mmap_entry(struct virtio_rdma_dev *vdev,
+		struct virtqueue *vq,
+		struct virtio_rdma_user_mmap_entry** entry_, int buf_size,
+		struct virtio_rdma_ucontext* vctx, __u64* size,
+		__u32* vq_size, dma_addr_t *dma_addr)
 {
 	void* buf = NULL;
 	int rc;
@@ -924,13 +926,15 @@ static void* virtio_rdma_init_mmap_entry(struct virtqueue *vq,
 	struct virtio_rdma_user_mmap_entry* entry;
 
 	total_size = PAGE_ALIGN(buf_size);
-	buf = alloc_pages_exact(total_size, GFP_KERNEL);
+	buf = dma_alloc_coherent(vdev->vdev->dev.parent, total_size,
+							dma_addr, GFP_KERNEL);
 	if (!buf)
 		return NULL;
 
 	entry = kzalloc(sizeof(*entry), GFP_KERNEL);
 	if (!entry) {
-		kfree(buf);
+		dma_free_coherent(vdev->vdev->dev.parent, total_size,
+						buf, *dma_addr);
 		return NULL;
 	}
 
@@ -945,7 +949,8 @@ static void* virtio_rdma_init_mmap_entry(struct virtqueue *vq,
 	rc = rdma_user_mmap_entry_insert(&vctx->ibucontext, &entry->rdma_entry,
 			total_size);
 	if (rc) {
-		kfree(buf);
+		dma_free_coherent(vdev->vdev->dev.parent, total_size,
+						buf, *dma_addr);
 		return NULL;
 	}
 
@@ -1032,35 +1037,39 @@ struct ib_qp *virtio_rdma_create_qp(struct ib_pd *ibpd,
 		
 		per_size = sizeof(struct virtio_rdma_cmd_post_send) +
 				   sizeof(struct virtio_rdma_sge) * attr->cap.max_send_sge;
-		vqp->usq_buf = virtio_rdma_init_mmap_entry(vqp->sq->vq, &vqp->sq_entry,
-				per_size * attr->cap.max_send_wr, uctx, &uresp.sq_size,
-				&uresp.svq_size);
+		vqp->usq_buf_size = PAGE_ALIGN(per_size * attr->cap.max_send_wr);
+		vqp->usq_buf = virtio_rdma_init_mmap_entry(vdev, vqp->sq->vq,
+						&vqp->sq_entry, vqp->usq_buf_size, uctx, &uresp.sq_size,
+						&uresp.svq_size, &vqp->usq_dma_addr);
 		if (!vqp->usq_buf)
 			goto out_err;
 
 		per_size = sizeof(struct virtio_rdma_cmd_post_recv) +
 				   sizeof(struct virtio_rdma_sge) * attr->cap.max_recv_sge;
-		vqp->urq_buf = virtio_rdma_init_mmap_entry(vqp->rq->vq, &vqp->rq_entry,
-				per_size * attr->cap.max_recv_wr, uctx, &uresp.rq_size,
-				&uresp.rvq_size);
+		vqp->urq_buf_size = PAGE_ALIGN(per_size * attr->cap.max_recv_wr);
+		vqp->urq_buf = virtio_rdma_init_mmap_entry(vdev, vqp->rq->vq,
+						&vqp->rq_entry, vqp->urq_buf_size, uctx, &uresp.rq_size,
+						&uresp.rvq_size, &vqp->urq_dma_addr);
 		if (!vqp->urq_buf) {
 			// TODO: pop sq entry
-			kfree(vqp->usq_buf);
+			dma_free_coherent(vdev->vdev->dev.parent, vqp->usq_buf_size,
+							vqp->usq_buf, vqp->usq_dma_addr);
 			goto out_err;
 		}
 
 		uresp.sq_offset = rdma_user_mmap_get_offset(&vqp->sq_entry->rdma_entry);
-		uresp.sq_phys_addr = virt_to_phys(vqp->usq_buf);
+		uresp.sq_phys_addr = vqp->usq_dma_addr;
 		uresp.num_sqe = attr->cap.max_send_wr;
 		uresp.num_svqe = virtqueue_get_vring_size(vqp->sq->vq);
 		uresp.sq_idx = vqp->sq->vq->index;
 
 		uresp.rq_offset = rdma_user_mmap_get_offset(&vqp->rq_entry->rdma_entry);
-		uresp.rq_phys_addr = virt_to_phys(vqp->urq_buf);
+		uresp.rq_phys_addr = vqp->urq_dma_addr;
 		uresp.num_rqe = attr->cap.max_recv_wr;
 		uresp.num_rvqe = virtqueue_get_vring_size(vqp->rq->vq);
 		uresp.rq_idx = vqp->rq->vq->index;
 
+		// TODO: not depend on vq_align
 		uresp.vq_align = SMP_CACHE_BYTES;
 		uresp.page_size = PAGE_SIZE;
 		uresp.qpn = vqp->qp_handle;
@@ -1080,8 +1089,10 @@ struct ib_qp *virtio_rdma_create_qp(struct ib_pd *ibpd,
 	goto out;
 
 out_err_u:
-	kfree(vqp->usq_buf);
-	kfree(vqp->urq_buf);
+	dma_free_coherent(vdev->vdev->dev.parent, vqp->usq_buf_size,
+					vqp->usq_buf, vqp->usq_dma_addr);
+	dma_free_coherent(vdev->vdev->dev.parent, vqp->urq_buf_size,
+					vqp->urq_buf, vqp->urq_dma_addr);
 	rdma_user_mmap_entry_remove(&vqp->sq_entry->rdma_entry);
 	rdma_user_mmap_entry_remove(&vqp->rq_entry->rdma_entry);
 out_err:
@@ -1114,8 +1125,10 @@ int virtio_rdma_destroy_qp(struct ib_qp *ibqp, struct ib_udata *udata)
 	                          &in, NULL);
 
 	if (udata) {
-		kfree(vqp->usq_buf);
-		kfree(vqp->urq_buf);
+		dma_free_coherent(vdev->vdev->dev.parent, vqp->usq_buf_size,
+						vqp->usq_buf, vqp->usq_dma_addr);
+		dma_free_coherent(vdev->vdev->dev.parent, vqp->urq_buf_size,
+						vqp->urq_buf, vqp->urq_dma_addr);
 		rdma_user_mmap_entry_remove(&vqp->sq_entry->rdma_entry);
 		rdma_user_mmap_entry_remove(&vqp->rq_entry->rdma_entry);
 	}
@@ -1570,7 +1583,7 @@ int virtio_rdma_post_recv(struct ib_qp *ibqp, const struct ib_recv_wr *wr,
 		if (rc) {
 			pr_err("post recv err %d", rc);
 			*bad_wr = wr;
-			goto out_err;
+			goto out;
 		}
 		wr = wr->next;
 		cmd = NULL;
@@ -1859,10 +1872,28 @@ int virtio_rdma_register_ib_device(struct virtio_rdma_dev *ri)
 	dev->num_comp_vectors = 1;
 	dev->dev.parent = ri->vdev->dev.parent;
 	dev->node_type = RDMA_NODE_IB_CA;
-	dev->uverbs_cmd_mask |=
-		(1ull << IB_USER_VERBS_CMD_POST_SEND)|
-		(1ull << IB_USER_VERBS_CMD_POST_RECV)|
-		(1ull << IB_USER_VERBS_CMD_REQ_NOTIFY_CQ);
+	dev->uverbs_cmd_mask = BIT_ULL(IB_USER_VERBS_CMD_GET_CONTEXT)
+	| BIT_ULL(IB_USER_VERBS_CMD_CREATE_COMP_CHANNEL)
+	| BIT_ULL(IB_USER_VERBS_CMD_QUERY_DEVICE)
+	| BIT_ULL(IB_USER_VERBS_CMD_QUERY_PORT)
+	| BIT_ULL(IB_USER_VERBS_CMD_ALLOC_PD)
+	| BIT_ULL(IB_USER_VERBS_CMD_DEALLOC_PD)
+	| BIT_ULL(IB_USER_VERBS_CMD_CREATE_QP)
+	| BIT_ULL(IB_USER_VERBS_CMD_MODIFY_QP)
+	| BIT_ULL(IB_USER_VERBS_CMD_QUERY_QP)
+	| BIT_ULL(IB_USER_VERBS_CMD_DESTROY_QP)
+	| BIT_ULL(IB_USER_VERBS_CMD_POST_SEND)
+	| BIT_ULL(IB_USER_VERBS_CMD_POST_RECV)
+	| BIT_ULL(IB_USER_VERBS_CMD_CREATE_CQ)
+	| BIT_ULL(IB_USER_VERBS_CMD_DESTROY_CQ)
+	| BIT_ULL(IB_USER_VERBS_CMD_POLL_CQ)
+	| BIT_ULL(IB_USER_VERBS_CMD_REQ_NOTIFY_CQ)
+	| BIT_ULL(IB_USER_VERBS_CMD_REG_MR)
+	| BIT_ULL(IB_USER_VERBS_CMD_DEREG_MR)
+	| BIT_ULL(IB_USER_VERBS_CMD_CREATE_AH)
+	| BIT_ULL(IB_USER_VERBS_CMD_MODIFY_AH)
+	| BIT_ULL(IB_USER_VERBS_CMD_QUERY_AH)
+	| BIT_ULL(IB_USER_VERBS_CMD_DESTROY_AH);
 
     ib_set_device_ops(dev, &virtio_rdma_dev_ops);
 	ib_device_set_netdev(dev, ri->netdev, 1);
