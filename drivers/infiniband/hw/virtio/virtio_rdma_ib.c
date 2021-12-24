@@ -1533,7 +1533,7 @@ int virtio_rdma_post_recv(struct ib_qp *ibqp, const struct ib_recv_wr *wr,
 {
 	struct scatterlist *sgs[1], hdr;
 	struct virtio_rdma_qp *vqp = to_vqp(ibqp);
-	struct virtio_rdma_cmd_post_recv *cmd;
+	struct virtio_rdma_cmd_post_recv *cmd = NULL;
 	int rc = 0, tmp;
 	unsigned int sgl_len;
 	void* ptr;
@@ -1553,6 +1553,7 @@ int virtio_rdma_post_recv(struct ib_qp *ibqp, const struct ib_recv_wr *wr,
 		cmd = kzalloc(sizeof(*cmd) + sgl_len, GFP_ATOMIC);
 		if (!cmd) {
 			rc = -ENOMEM;
+			*bad_wr = wr;
 			goto out;
 		}
 
@@ -1568,19 +1569,18 @@ int virtio_rdma_post_recv(struct ib_qp *ibqp, const struct ib_recv_wr *wr,
 		rc = virtqueue_add_sgs(vqp->rq->vq, sgs, 1, 0, cmd, GFP_ATOMIC);
 		if (rc) {
 			pr_err("post recv err %d", rc);
+			*bad_wr = wr;
 			goto out_err;
 		}
 		wr = wr->next;
+		cmd = NULL;
 	}
 
-	virtqueue_kick(vqp->rq->vq);
-	goto out;
-
-out_err:
-	*bad_wr = wr;
-	kfree(cmd);
 out:
 	spin_unlock(&vqp->rq->lock);
+
+	kfree(cmd);
+	virtqueue_kick(vqp->rq->vq);
 	return rc;
 }
 
@@ -1602,7 +1602,7 @@ int virtio_rdma_post_send(struct ib_qp *ibqp, const struct ib_send_wr *wr,
 {
 	struct scatterlist *sgs[1], hdr;
 	struct virtio_rdma_qp *vqp = to_vqp(ibqp);
-	struct virtio_rdma_cmd_post_send *cmd;
+	struct virtio_rdma_cmd_post_send *cmd = NULL;
 	int rc = 0;
 	unsigned tmp;
 	unsigned int sgl_len;
@@ -1616,6 +1616,7 @@ int virtio_rdma_post_send(struct ib_qp *ibqp, const struct ib_send_wr *wr,
 			wr->opcode != IB_WR_REG_MR &&
 			wr->opcode != IB_WR_LOCAL_INV && wr->opcode != IB_WR_SEND_WITH_INV) {
 			pr_warn("Only support op send in kernel\n");
+			*bad_wr = wr;
 			rc = -EINVAL;
 			goto out;
 		}
@@ -1628,6 +1629,7 @@ int virtio_rdma_post_send(struct ib_qp *ibqp, const struct ib_send_wr *wr,
 		sgl_len = sizeof(struct virtio_rdma_sge) * wr->num_sge;
 		cmd = kzalloc(sizeof(*cmd) + sgl_len, GFP_ATOMIC);
 		if (!cmd) {
+			*bad_wr = wr;
 			rc = -ENOMEM;
 			goto out;
 		}
@@ -1692,7 +1694,7 @@ int virtio_rdma_post_send(struct ib_qp *ibqp, const struct ib_send_wr *wr,
 		default:
 			pr_err("Bad qp type\n");
 			rc = -EINVAL;
-			goto out_err;
+			goto out;
 		}
 
 		// TODO: check max_inline_data
@@ -1707,20 +1709,19 @@ int virtio_rdma_post_send(struct ib_qp *ibqp, const struct ib_send_wr *wr,
 		rc = virtqueue_add_sgs(vqp->sq->vq, sgs, 1, 0, cmd, GFP_ATOMIC);
 		if (rc) {
 			pr_err("post send err %d", rc);
-			goto out_err;
+			*bad_wr = wr;
+			goto out;
 		}
 
+		cmd = NULL;
 		wr = wr->next;
 	}
 
-	virtqueue_kick(vqp->sq->vq);
-	goto out;
-
-out_err:
-	*bad_wr = wr;
-	kfree(cmd);
 out:
 	spin_unlock(&vqp->sq->lock);
+
+	kfree(cmd);
+	virtqueue_kick(vqp->sq->vq);
 	return rc;
 }
 
