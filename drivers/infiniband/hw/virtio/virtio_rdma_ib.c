@@ -363,12 +363,8 @@ static int virtio_rdma_create_cq(struct ib_cq *ibcq,
 		entry->ubuf = vcq->queue;
 		entry->ubuf_size = vcq->queue_size;
 
-		/* Todo: Don't depend on vq_align */
-		uresp.vq_align = SMP_CACHE_BYTES;
-//		uresp.avail_off = virtqueue_get_avail_addr(vcq->vq->vq) -
-//					virtqueue_get_desc_addr(vcq->vq->vq);
-//		uresp.used_off = virtqueue_get_used_addr(vcq->vq->vq) -
-//					virtqueue_get_desc_addr(vcq->vq->vq);
+		uresp.used_off = virtqueue_get_used_addr(vcq->vq->vq) -
+					virtqueue_get_desc_addr(vcq->vq->vq);
 
 		uresp.vq_size = PAGE_ALIGN(vring_size(virtqueue_get_vring_size(vcq->vq->vq), SMP_CACHE_BYTES));
 		total_size += uresp.vq_size;
@@ -915,7 +911,7 @@ out:
 static void* virtio_rdma_init_mmap_entry(struct virtio_rdma_dev *vdev,
 		struct virtqueue *vq,
 		struct virtio_rdma_user_mmap_entry** entry_, int buf_size,
-		struct virtio_rdma_ucontext* vctx, __u64* size,
+		struct virtio_rdma_ucontext* vctx, __u64* size, __u64* used_off,
 		__u32* vq_size, dma_addr_t *dma_addr)
 {
 	void* buf = NULL;
@@ -941,6 +937,7 @@ static void* virtio_rdma_init_mmap_entry(struct virtio_rdma_dev *vdev,
 	entry->ubuf = buf;
 	entry->ubuf_size = PAGE_ALIGN(buf_size);
 
+	*used_off = virtqueue_get_used_addr(vq) - virtqueue_get_desc_addr(vq);
 	*vq_size = PAGE_ALIGN(vring_size(virtqueue_get_vring_size(vq), SMP_CACHE_BYTES));
 	total_size += *vq_size + PAGE_SIZE;
 
@@ -1037,7 +1034,8 @@ struct ib_qp *virtio_rdma_create_qp(struct ib_pd *ibpd,
 				   sizeof(struct virtio_rdma_sge) * attr->cap.max_send_sge;
 		vqp->usq_buf_size = PAGE_ALIGN(per_size * attr->cap.max_send_wr);
 		vqp->usq_buf = virtio_rdma_init_mmap_entry(vdev, vqp->sq->vq,
-						&vqp->sq_entry, vqp->usq_buf_size, uctx, &uresp.sq_size,
+						&vqp->sq_entry, vqp->usq_buf_size, uctx,
+						&uresp.sq_size, &uresp.svq_used_off,
 						&uresp.svq_size, &vqp->usq_dma_addr);
 		if (!vqp->usq_buf)
 			goto out_err;
@@ -1046,7 +1044,8 @@ struct ib_qp *virtio_rdma_create_qp(struct ib_pd *ibpd,
 				   sizeof(struct virtio_rdma_sge) * attr->cap.max_recv_sge;
 		vqp->urq_buf_size = PAGE_ALIGN(per_size * attr->cap.max_recv_wr);
 		vqp->urq_buf = virtio_rdma_init_mmap_entry(vdev, vqp->rq->vq,
-						&vqp->rq_entry, vqp->urq_buf_size, uctx, &uresp.rq_size,
+						&vqp->rq_entry, vqp->urq_buf_size, uctx,
+						&uresp.rq_size, &uresp.rvq_used_off,
 						&uresp.rvq_size, &vqp->urq_dma_addr);
 		if (!vqp->urq_buf) {
 			// TODO: pop sq entry
@@ -1067,8 +1066,6 @@ struct ib_qp *virtio_rdma_create_qp(struct ib_pd *ibpd,
 		uresp.num_rvqe = virtqueue_get_vring_size(vqp->rq->vq);
 		uresp.rq_idx = vqp->rq->vq->index;
 
-		// TODO: not depend on vq_align
-		uresp.vq_align = SMP_CACHE_BYTES;
 		uresp.page_size = PAGE_SIZE;
 		uresp.qpn = vqp->qp_handle;
 
