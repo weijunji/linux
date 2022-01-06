@@ -60,6 +60,67 @@ static const char* cmd_name[] = {
 	[VIRTIO_CMD_REQ_NOTIFY_CQ] = "VIRTIO_CMD_REQ_NOTIFY_CQ",
 };
 
+static void ib_qp_cap_to_virtio_rdma(struct virtio_rdma_qp_cap *dst, const struct ib_qp_cap *src)
+{
+	dst->max_send_wr = src->max_send_wr;
+	dst->max_recv_wr = src->max_recv_wr;
+	dst->max_send_sge = src->max_send_sge;
+	dst->max_recv_sge = src->max_recv_sge;
+	dst->max_inline_data = src->max_inline_data;
+}
+
+static void virtio_rdma_to_ib_qp_cap(struct ib_qp_cap *dst, const struct virtio_rdma_qp_cap *src)
+{
+	dst->max_send_wr = src->max_send_wr;
+	dst->max_recv_wr = src->max_recv_wr;
+	dst->max_send_sge = src->max_send_sge;
+	dst->max_recv_sge = src->max_recv_sge;
+	dst->max_inline_data = src->max_inline_data;
+}
+
+void ib_global_route_to_virtio_rdma(struct virtio_rdma_global_route *dst,
+			       const struct ib_global_route *src)
+{
+	dst->dgid = src->dgid;
+	dst->flow_label = src->flow_label;
+	dst->sgid_index = src->sgid_index;
+	dst->hop_limit = src->hop_limit;
+	dst->traffic_class = src->traffic_class;
+}
+
+void virtio_rdma_to_ib_global_route(struct ib_global_route *dst,
+			       const struct virtio_rdma_global_route *src)
+{
+	dst->dgid = src->dgid;
+	dst->flow_label = src->flow_label;
+	dst->sgid_index = src->sgid_index;
+	dst->hop_limit = src->hop_limit;
+	dst->traffic_class = src->traffic_class;
+}
+
+void rdma_ah_attr_to_virtio_rdma(struct virtio_rdma_ah_attr *dst,
+			    const struct rdma_ah_attr *src)
+{
+	ib_global_route_to_virtio_rdma(&dst->grh, rdma_ah_read_grh(src));
+	dst->sl = rdma_ah_get_sl(src);
+	dst->static_rate = rdma_ah_get_static_rate(src);
+	dst->port_num = rdma_ah_get_port_num(src);
+	dst->ah_flags = rdma_ah_get_ah_flags(src);
+	dst->type = src->type;
+	memcpy(&dst->roce, &src->roce, sizeof(struct roce_ah_attr));
+}
+
+void virtio_rdma_to_rdma_ah_attr(struct rdma_ah_attr *dst,
+			    const struct virtio_rdma_ah_attr *src)
+{
+	virtio_rdma_to_ib_global_route(rdma_ah_retrieve_grh(dst), &src->grh);
+	rdma_ah_set_sl(dst, src->sl);
+	rdma_ah_set_static_rate(dst, src->static_rate);
+	rdma_ah_set_port_num(dst, src->port_num);
+	rdma_ah_set_ah_flags(dst, src->ah_flags);
+	memcpy(&dst->roce, &src->roce, sizeof(struct roce_ah_attr));
+}
+
 static int virtio_rdma_exec_cmd(struct virtio_rdma_dev *di, int cmd,
 				struct scatterlist *in, struct scatterlist *out)
 {
