@@ -1345,6 +1345,203 @@ static int virtio_rdma_query_pkey(struct ib_device *ibdev, u32 port, u16 index,
 	return rc;
 }
 
+int virtio_rdma_post_recv(struct ib_qp *ibqp, const struct ib_recv_wr *wr,
+			  const struct ib_recv_wr **bad_wr)
+{
+	struct scatterlist *sgs[1], hdr;
+	struct virtio_rdma_qp *vqp = to_vqp(ibqp);
+	struct virtio_rdma_cmd_post_recv *cmd = NULL;
+	int rc = 0, tmp;
+	unsigned int sgl_len;
+	void* ptr;
+
+	if (vqp->ibqp.qp_type == IB_QPT_SMI)
+		return -EOPNOTSUPP;
+
+	spin_lock(&vqp->rq->lock);
+
+	// TODO: check bad wr
+	while (wr) {
+		while ((ptr = virtqueue_get_buf(vqp->rq->vq, &tmp)) != NULL) {
+			kfree(ptr);
+		}
+
+		sgl_len = sizeof(struct virtio_rdma_sge) * wr->num_sge;
+		cmd = kzalloc(sizeof(*cmd) + sgl_len, GFP_ATOMIC);
+		if (!cmd) {
+			rc = -ENOMEM;
+			*bad_wr = wr;
+			goto out;
+		}
+
+		cmd->qpn = to_vqp(ibqp)->qp_handle;
+		cmd->is_kernel = 1;
+		cmd->num_sge = wr->num_sge;
+		cmd->wr_id = wr->wr_id;
+		memcpy((char*)cmd + sizeof(*cmd), wr->sg_list, sgl_len);
+
+		sg_init_one(&hdr, cmd, sizeof(*cmd) + sgl_len);
+		sgs[0] = &hdr;
+
+		rc = virtqueue_add_sgs(vqp->rq->vq, sgs, 1, 0, cmd, GFP_ATOMIC);
+		if (rc) {
+			pr_err("post recv err %d", rc);
+			*bad_wr = wr;
+			goto out;
+		}
+		wr = wr->next;
+		cmd = NULL;
+	}
+
+out:
+	spin_unlock(&vqp->rq->lock);
+
+	kfree(cmd);
+	virtqueue_kick(vqp->rq->vq);
+	return rc;
+}
+
+static void copy_inline_data_to_wqe(struct virtio_rdma_cmd_post_send *wqe,
+				    const struct ib_send_wr *ibwr)
+{
+	struct ib_sge *sge = ibwr->sg_list;
+	char *p = (char*)wqe + sizeof(*wqe);
+	int i;
+
+	for (i = 0; i < ibwr->num_sge; i++, sge++) {
+		memcpy(p, (void *)(uintptr_t)sge->addr, sge->length);
+		p += sge->length;
+	}
+}
+
+int virtio_rdma_post_send(struct ib_qp *ibqp, const struct ib_send_wr *wr,
+			  const struct ib_send_wr **bad_wr)
+{
+	struct scatterlist *sgs[1], hdr;
+	struct virtio_rdma_qp *vqp = to_vqp(ibqp);
+	struct virtio_rdma_cmd_post_send *cmd = NULL;
+	int rc = 0;
+	unsigned tmp;
+	unsigned int sgl_len;
+	void* ptr;
+
+	spin_lock(&vqp->sq->lock);
+
+	while (wr) {
+		if (vqp->type == VIRTIO_RDMA_TYPE_KERNEL &&
+			wr->opcode != IB_WR_SEND && wr->opcode != IB_WR_SEND_WITH_IMM &&
+			wr->opcode != IB_WR_REG_MR &&
+			wr->opcode != IB_WR_LOCAL_INV && wr->opcode != IB_WR_SEND_WITH_INV) {
+			pr_warn("Only support op send in kernel\n");
+			*bad_wr = wr;
+			rc = -EINVAL;
+			goto out;
+		}
+
+		while ((ptr = virtqueue_get_buf(vqp->rq->vq, &tmp)) != NULL) {
+			kfree(ptr);
+		}
+
+		// FIXME: space for inline data
+		sgl_len = sizeof(struct virtio_rdma_sge) * wr->num_sge;
+		cmd = kzalloc(sizeof(*cmd) + sgl_len, GFP_ATOMIC);
+		if (!cmd) {
+			*bad_wr = wr;
+			rc = -ENOMEM;
+			goto out;
+		}
+
+		cmd->qpn = vqp->qp_handle;
+		cmd->is_kernel = 1;
+		cmd->num_sge = wr->num_sge;
+		cmd->send_flags = wr->send_flags;
+		cmd->opcode = wr->opcode;
+		cmd->wr_id = wr->wr_id;
+		cmd->ex.imm_data = wr->ex.imm_data;
+		cmd->ex.invalidate_rkey = wr->ex.invalidate_rkey;
+
+		switch (ibqp->qp_type) {
+		case IB_QPT_GSI:
+		case IB_QPT_UD:
+			if (unlikely(!ud_wr(wr)->ah)) {
+				pr_warn("invalid address handle\n");
+				*bad_wr = wr;
+				rc = -EINVAL;
+				goto out;
+			}
+
+			cmd->wr.ud.remote_qpn = ud_wr(wr)->remote_qpn;
+			cmd->wr.ud.remote_qkey = ud_wr(wr)->remote_qkey;
+			cmd->wr.ud.av = to_vah(ud_wr(wr)->ah)->av;
+			break;
+		case IB_QPT_RC:
+			switch (wr->opcode) {
+			case IB_WR_RDMA_READ:
+			case IB_WR_RDMA_WRITE:
+			case IB_WR_RDMA_WRITE_WITH_IMM:
+				cmd->wr.rdma.remote_addr =
+					rdma_wr(wr)->remote_addr;
+				cmd->wr.rdma.rkey = rdma_wr(wr)->rkey;
+				break;
+			case IB_WR_LOCAL_INV:
+			case IB_WR_SEND_WITH_INV:
+				cmd->ex.invalidate_rkey =
+					wr->ex.invalidate_rkey;
+				break;
+			case IB_WR_ATOMIC_CMP_AND_SWP:
+			case IB_WR_ATOMIC_FETCH_AND_ADD:
+				cmd->wr.atomic.remote_addr =
+					atomic_wr(wr)->remote_addr;
+				cmd->wr.atomic.rkey = atomic_wr(wr)->rkey;
+				cmd->wr.atomic.compare_add =
+					atomic_wr(wr)->compare_add;
+				if (wr->opcode == IB_WR_ATOMIC_CMP_AND_SWP)
+					cmd->wr.atomic.swap =
+						atomic_wr(wr)->swap;
+				break;
+			case IB_WR_REG_MR:
+				cmd->wr.reg.mrn = to_vmr(reg_wr(wr)->mr)->mr_handle;
+				cmd->wr.reg.key = reg_wr(wr)->key;
+				cmd->wr.reg.access = reg_wr(wr)->access;
+				break;
+			default:
+				break;
+			}
+			break;
+		default:
+			pr_err("Bad qp type\n");
+			rc = -EINVAL;
+			goto out;
+		}
+
+		// TODO: check max_inline_data
+		if (unlikely(wr->send_flags & IB_SEND_INLINE))
+			copy_inline_data_to_wqe(cmd, wr);
+		else
+			memcpy((char*)cmd + sizeof(*cmd), wr->sg_list, sgl_len);
+
+		sg_init_one(&hdr, cmd, sizeof(*cmd) + sgl_len);
+		sgs[0] = &hdr;
+
+		rc = virtqueue_add_sgs(vqp->sq->vq, sgs, 1, 0, cmd, GFP_ATOMIC);
+		if (rc) {
+			pr_err("post send err %d", rc);
+			*bad_wr = wr;
+			goto out;
+		}
+
+		cmd = NULL;
+		wr = wr->next;
+	}
+
+out:
+	spin_unlock(&vqp->sq->lock);
+
+	kfree(cmd);
+	virtqueue_kick(vqp->sq->vq);
+	return rc;
+}
+
 static int virtio_rdma_port_immutable(struct ib_device *ibdev, u32 port_num,
 				      struct ib_port_immutable *immutable)
 {
