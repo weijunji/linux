@@ -150,6 +150,123 @@ static struct scatterlist* init_sg(void* buf, unsigned long nbytes) {
 	return sg;
 }
 
+static int virtio_rdma_port_immutable(struct ib_device *ibdev, u32 port_num,
+				      struct ib_port_immutable *immutable)
+{
+	struct ib_port_attr attr;
+	int rc;
+
+	rc = ib_query_port(ibdev, port_num, &attr);
+	if (rc)
+		return rc;
+
+	immutable->core_cap_flags = RDMA_CORE_PORT_VIRTIO;
+	immutable->pkey_tbl_len = attr.pkey_tbl_len;
+	immutable->gid_tbl_len = attr.gid_tbl_len;
+	immutable->max_mad_size = IB_MGMT_MAD_SIZE;
+
+	return 0;
+}
+
+static int virtio_rdma_query_device(struct ib_device *ibdev,
+				    struct ib_device_attr *props,
+				    struct ib_udata *uhw)
+{
+	if (uhw->inlen || uhw->outlen)
+		return -EINVAL;
+
+	*props = to_vdev(ibdev)->attr;
+	return 0;
+}
+
+static int virtio_rdma_query_port(struct ib_device *ibdev, u32 port,
+				  struct ib_port_attr *props)
+{
+	struct scatterlist in, *out;
+	struct cmd_query_port *cmd;
+	struct virtio_rdma_port_attr port_attr;
+	int rc;
+
+	cmd = kmalloc(sizeof(*cmd), GFP_ATOMIC);
+	if (!cmd)
+		return -ENOMEM;
+
+	out = init_sg(&port_attr, sizeof(port_attr));
+	if (!out) {
+		kfree(cmd);
+		return -ENOMEM;
+	}
+
+	cmd->port = port;
+	sg_init_one(&in, cmd, sizeof(*cmd));
+
+	rc = virtio_rdma_exec_cmd(to_vdev(ibdev), VIRTIO_CMD_QUERY_PORT, &in,
+				  out);
+
+	props->state = port_attr.state;
+	props->max_mtu = port_attr.max_mtu;
+	props->active_mtu = port_attr.active_mtu;
+	props->phys_mtu = port_attr.phys_mtu;
+	props->gid_tbl_len = port_attr.gid_tbl_len;
+	props->ip_gids = port_attr.ip_gids;
+	props->port_cap_flags = port_attr.port_cap_flags;
+	props->max_msg_sz = port_attr.max_msg_sz;
+	props->bad_pkey_cntr = port_attr.bad_pkey_cntr;
+	props->qkey_viol_cntr = port_attr.qkey_viol_cntr;
+	props->pkey_tbl_len = port_attr.pkey_tbl_len;
+	props->sm_lid = port_attr.sm_lid;
+	props->lid = port_attr.lid;
+	props->lmc = port_attr.lmc;
+	props->max_vl_num = port_attr.max_vl_num;
+	props->sm_sl = port_attr.sm_sl;
+	props->subnet_timeout = port_attr.subnet_timeout;
+	props->init_type_reply = port_attr.init_type_reply;
+	props->active_width = port_attr.active_width;
+	props->active_speed = port_attr.active_speed;
+	props->phys_state = port_attr.phys_state;
+	props->port_cap_flags2 = port_attr.port_cap_flags2;
+
+	kfree(out);
+	kfree(cmd);
+
+	return rc;
+}
+
+static struct net_device *virtio_rdma_get_netdev(struct ib_device *ibdev,
+						 u32 port_num)
+{
+	struct virtio_rdma_dev *ri = to_vdev(ibdev);
+	return ri->netdev;
+}
+
+static int virtio_rdma_modify_port(struct ib_device *ibdev, u32 port, int mask,
+			    struct ib_port_modify *props)
+{
+	struct ib_port_attr attr;
+	struct virtio_rdma_dev *vdev = to_vdev(ibdev);
+	int ret;
+
+	if (mask & ~IB_PORT_SHUTDOWN) {
+		pr_warn("unsupported port modify mask %#x\n", mask);
+		return -EOPNOTSUPP;
+	}
+
+	mutex_lock(&vdev->port_mutex);
+	ret = ib_query_port(ibdev, port, &attr);
+	if (ret)
+		goto out;
+
+	vdev->port_cap_mask |= props->set_port_cap_mask;
+	vdev->port_cap_mask &= ~props->clr_port_cap_mask;
+
+	if (mask & IB_PORT_SHUTDOWN)
+		vdev->ib_active = false;
+
+out:
+	mutex_unlock(&vdev->port_mutex);
+	return ret;
+}
+
 static void virtio_rdma_get_fw_ver_str(struct ib_device *device, char *str)
 {
 	snprintf(str, IB_FW_VERSION_NAME_MAX, "%d.%d.%d\n", 1, 0, 0);
