@@ -822,7 +822,7 @@ int ib_init_ah_attr_from_wc(struct ib_device *device, u32 port_num,
 	rdma_ah_set_sl(ah_attr, wc->sl);
 	rdma_ah_set_port_num(ah_attr, port_num);
 
-	if (rdma_protocol_roce(device, port_num)) {
+	if (rdma_protocol_virtio_or_roce(device, port_num)) {
 		u16 vlan_id = wc->wc_flags & IB_WC_WITH_VLAN ?
 				wc->vlan_id : 0xffff;
 

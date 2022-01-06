@@ -396,7 +396,7 @@ static void del_gid(struct ib_device *ib_dev, u32 port,
 	/*
 	 * For non RoCE protocol, GID entry slot is ready to use.
 	 */
-	if (!rdma_protocol_roce(ib_dev, port))
+	if (!rdma_protocol_virtio_or_roce(ib_dev, port))
 		table->data_vec[ix] = NULL;
 	write_unlock_irq(&table->rwlock);
 
@@ -448,7 +448,7 @@ static int add_modify_gid(struct ib_gid_table *table,
 	if (!entry)
 		return -ENOMEM;
 
-	if (rdma_protocol_roce(attr->device, attr->port_num)) {
+	if (rdma_protocol_virtio_or_roce(attr->device, attr->port_num)) {
 		ret = add_roce_gid(entry);
 		if (ret)
 			goto done;
@@ -1482,7 +1482,7 @@ ib_cache_update(struct ib_device *device, u32 port, bool update_gids,
 		goto err;
 	}
 
-	if (!rdma_protocol_roce(device, port) && update_gids) {
+	if (!rdma_protocol_virtio_or_roce(device, port) && update_gids) {
 		ret = config_non_roce_gid_cache(device, port,
 						tprops->gid_tbl_len);
 		if (ret)

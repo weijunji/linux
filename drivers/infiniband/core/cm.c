@@ -3288,7 +3288,7 @@ static int cm_lap_handler(struct cm_work *work)
 	/* Currently Alternate path messages are not supported for
 	 * RoCE link layer.
 	 */
-	if (rdma_protocol_roce(work->port->cm_dev->ib_device,
+	if (rdma_protocol_virtio_or_roce(work->port->cm_dev->ib_device,
 			       work->port->port_num))
 		return -EINVAL;
 
@@ -3381,7 +3381,7 @@ static int cm_apr_handler(struct cm_work *work)
 	/* Currently Alternate path messages are not supported for
 	 * RoCE link layer.
 	 */
-	if (rdma_protocol_roce(work->port->cm_dev->ib_device,
+	if (rdma_protocol_virtio_or_roce(work->port->cm_dev->ib_device,
 			       work->port->port_num))
 		return -EINVAL;
 

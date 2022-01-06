@@ -745,7 +745,7 @@ int ib_init_ah_from_mcmember(struct ib_device *device, u32 port_num,
 	 */
 	if (rdma_protocol_ib(device, port_num))
 		ndev = NULL;
-	else if (!rdma_protocol_roce(device, port_num))
+	else if (!rdma_protocol_virtio_or_roce(device, port_num))
 		return -EINVAL;
 
 	sgid_attr = rdma_find_gid_by_port(device, &rec->port_gid,

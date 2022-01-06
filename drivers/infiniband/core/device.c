@@ -2297,7 +2297,7 @@ void ib_enum_roce_netdev(struct ib_device *ib_dev,
 	u32 port;
 
 	rdma_for_each_port (ib_dev, port)
-		if (rdma_protocol_roce(ib_dev, port)) {
+		if (rdma_protocol_virtio_or_roce(ib_dev, port)) {
 			struct net_device *idev =
 				ib_device_get_netdev(ib_dev, port);
 
@@ -2429,7 +2429,7 @@ int ib_modify_port(struct ib_device *device,
 		rc = device->ops.modify_port(device, port_num,
 					     port_modify_mask,
 					     port_modify);
-	else if (rdma_protocol_roce(device, port_num) &&
+	else if (rdma_protocol_virtio_or_roce(device, port_num) &&
 		 ((port_modify->set_port_cap_mask & ~IB_PORT_CM_SUP) == 0 ||
 		  (port_modify->clr_port_cap_mask & ~IB_PORT_CM_SUP) == 0))
 		rc = 0;

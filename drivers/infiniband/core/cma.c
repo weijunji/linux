@@ -573,7 +573,7 @@ cma_validate_port(struct ib_device *device, u32 port,
 	if ((dev_type != ARPHRD_INFINIBAND) && rdma_protocol_ib(device, port))
 		return ERR_PTR(-ENODEV);
 
-	if (dev_type == ARPHRD_ETHER && rdma_protocol_roce(device, port)) {
+	if (dev_type == ARPHRD_ETHER && rdma_protocol_virtio_or_roce(device, port)) {
 		ndev = dev_get_by_index(dev_addr->net, bound_if_index);
 		if (!ndev)
 			return ERR_PTR(-ENODEV);
@@ -626,7 +626,7 @@ static int cma_acquire_dev_by_src_ip(struct rdma_id_private *id_priv)
 	mutex_lock(&lock);
 	list_for_each_entry(cma_dev, &dev_list, list) {
 		rdma_for_each_port (cma_dev->device, port) {
-			gidp = rdma_protocol_roce(cma_dev->device, port) ?
+			gidp = rdma_protocol_virtio_or_roce(cma_dev->device, port) ?
 			       &iboe_gid : &gid;
 			gid_type = cma_dev->default_gid_type[port - 1];
 			sgid_attr = cma_validate_port(cma_dev->device, port,
@@ -669,7 +669,7 @@ static int cma_ib_acquire_dev(struct rdma_id_private *id_priv,
 	    id_priv->id.ps == RDMA_PS_IPOIB)
 		return -EINVAL;
 
-	if (rdma_protocol_roce(req->device, req->port))
+	if (rdma_protocol_virtio_or_roce(req->device, req->port))
 		rdma_ip2gid((struct sockaddr *)&id_priv->id.route.addr.src_addr,
 			    &gid);
 	else
@@ -1525,7 +1525,7 @@ static struct net_device *cma_get_net_dev(const struct ib_cm_event *ib_event,
 	if (err)
 		return ERR_PTR(err);
 
-	if (rdma_protocol_roce(req->device, req->port))
+	if (rdma_protocol_virtio_or_roce(req->device, req->port))
 		net_dev = roce_get_net_dev_by_cm_event(ib_event);
 	else
 		net_dev = ib_get_net_dev_by_params(req->device, req->port,
@@ -1583,7 +1583,7 @@ static bool cma_protocol_roce(const struct rdma_cm_id *id)
 	struct ib_device *device = id->device;
 	const u32 port_num = id->port_num ?: rdma_start_port(device);
 
-	return rdma_protocol_roce(device, port_num);
+	return rdma_protocol_virtio_or_roce(device, port_num);
 }
 
 static bool cma_is_req_ipv6_ll(const struct cma_req_info *req)
@@ -1813,7 +1813,7 @@ static void destroy_mc(struct rdma_id_private *id_priv,
 	if (rdma_cap_ib_mcast(id_priv->id.device, id_priv->id.port_num))
 		ib_sa_free_multicast(mc->sa_mc);
 
-	if (rdma_protocol_roce(id_priv->id.device, id_priv->id.port_num)) {
+	if (rdma_protocol_virtio_or_roce(id_priv->id.device, id_priv->id.port_num)) {
 		struct rdma_dev_addr *dev_addr =
 			&id_priv->id.route.addr.dev_addr;
 		struct net_device *ndev = NULL;
@@ -2296,7 +2296,7 @@ void rdma_read_gids(struct rdma_cm_id *cm_id, union ib_gid *sgid,
 		return;
 	}
 
-	if (rdma_protocol_roce(cm_id->device, cm_id->port_num)) {
+	if (rdma_protocol_virtio_or_roce(cm_id->device, cm_id->port_num)) {
 		if (sgid)
 			rdma_ip2gid((struct sockaddr *)&addr->src_addr, sgid);
 		if (dgid)
@@ -2919,7 +2919,7 @@ int rdma_set_ib_path(struct rdma_cm_id *id,
 		goto err;
 	}
 
-	if (rdma_protocol_roce(id->device, id->port_num)) {
+	if (rdma_protocol_virtio_or_roce(id->device, id->port_num)) {
 		ndev = cma_iboe_set_path_rec_l2_fields(id_priv);
 		if (!ndev) {
 			ret = -ENODEV;
@@ -3139,7 +3139,7 @@ int rdma_resolve_route(struct rdma_cm_id *id, unsigned long timeout_ms)
 	cma_id_get(id_priv);
 	if (rdma_cap_ib_sa(id->device, id->port_num))
 		ret = cma_resolve_ib_route(id_priv, timeout_ms);
-	else if (rdma_protocol_roce(id->device, id->port_num))
+	else if (rdma_protocol_virtio_or_roce(id->device, id->port_num))
 		ret = cma_resolve_iboe_route(id_priv);
 	else if (rdma_protocol_iwarp(id->device, id->port_num))
 		ret = cma_resolve_iw_route(id_priv);
@@ -4766,7 +4766,7 @@ int rdma_join_multicast(struct rdma_cm_id *id, struct sockaddr *addr,
 	mc->id_priv = id_priv;
 	mc->join_state = join_state;
 
-	if (rdma_protocol_roce(id->device, id->port_num)) {
+	if (rdma_protocol_virtio_or_roce(id->device, id->port_num)) {
 		ret = cma_iboe_join_multicast(id_priv, mc);
 		if (ret)
 			goto out_err;

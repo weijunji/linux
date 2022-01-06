@@ -623,6 +623,7 @@ static inline struct rdma_hw_stats *rdma_alloc_hw_stats_struct(
 #define RDMA_CORE_CAP_PROT_ROCE_UDP_ENCAP 0x00800000
 #define RDMA_CORE_CAP_PROT_RAW_PACKET   0x01000000
 #define RDMA_CORE_CAP_PROT_USNIC        0x02000000
+#define RDMA_CORE_CAP_PROT_VIRTIO		0x04000000
 
 #define RDMA_CORE_PORT_IB_GRH_REQUIRED (RDMA_CORE_CAP_IB_GRH_REQUIRED \
 					| RDMA_CORE_CAP_PROT_ROCE     \
@@ -653,6 +654,14 @@ static inline struct rdma_hw_stats *rdma_alloc_hw_stats_struct(
 #define RDMA_CORE_PORT_RAW_PACKET	(RDMA_CORE_CAP_PROT_RAW_PACKET)
 
 #define RDMA_CORE_PORT_USNIC		(RDMA_CORE_CAP_PROT_USNIC)
+
+/* in most time, RDMA_CORE_PORT_VIRTIO is same as RDMA_CORE_PORT_IBA_ROCE_UDP_ENCAP */
+#define RDMA_CORE_PORT_VIRTIO    \
+                    (RDMA_CORE_CAP_PROT_VIRTIO \
+					| RDMA_CORE_CAP_IB_MAD  \
+					| RDMA_CORE_CAP_IB_CM   \
+					| RDMA_CORE_CAP_AF_IB   \
+					| RDMA_CORE_CAP_ETH_AH)
 
 struct ib_port_attr {
 	u64			subnet_prefix;
@@ -3031,6 +3040,18 @@ static inline bool rdma_protocol_ib(const struct ib_device *device,
 	       RDMA_CORE_CAP_PROT_IB;
 }
 
+static inline bool rdma_protocol_virtio(const struct ib_device *device, u32 port_num)
+{
+	return device->port_data[port_num].immutable.core_cap_flags &
+	       RDMA_CORE_CAP_PROT_VIRTIO;
+}
+
+static inline bool rdma_protocol_virtio_or_roce(const struct ib_device *device, u32 port_num)
+{
+	return device->port_data[port_num].immutable.core_cap_flags &
+	       (RDMA_CORE_CAP_PROT_VIRTIO | RDMA_CORE_CAP_PROT_ROCE | RDMA_CORE_CAP_PROT_ROCE_UDP_ENCAP);
+}
+
 static inline bool rdma_protocol_roce(const struct ib_device *device,
 				      u32 port_num)
 {
@@ -3063,7 +3084,8 @@ static inline bool rdma_ib_or_roce(const struct ib_device *device,
 				   u32 port_num)
 {
 	return rdma_protocol_ib(device, port_num) ||
-		rdma_protocol_roce(device, port_num);
+		rdma_protocol_roce(device, port_num) ||
+		rdma_protocol_virtio(device, port_num);
 }
 
 static inline bool rdma_protocol_raw_packet(const struct ib_device *device,
@@ -3322,7 +3344,7 @@ static inline size_t rdma_max_mad_size(const struct ib_device *device,
 static inline bool rdma_cap_roce_gid_table(const struct ib_device *device,
 					   u32 port_num)
 {
-	return rdma_protocol_roce(device, port_num) &&
+	return rdma_protocol_virtio_or_roce(device, port_num) &&
 		device->ops.add_gid && device->ops.del_gid;
 }
 
@@ -4502,7 +4524,7 @@ void rdma_move_ah_attr(struct rdma_ah_attr *dest, struct rdma_ah_attr *src);
 static inline enum rdma_ah_attr_type rdma_ah_find_type(struct ib_device *dev,
 						       u32 port_num)
 {
-	if (rdma_protocol_roce(dev, port_num))
+	if (rdma_protocol_virtio_or_roce(dev, port_num))
 		return RDMA_AH_ATTR_TYPE_ROCE;
 	if (rdma_protocol_ib(dev, port_num)) {
 		if (rdma_cap_opa_ah(dev, port_num))
