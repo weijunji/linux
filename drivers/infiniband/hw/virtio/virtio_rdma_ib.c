@@ -527,6 +527,56 @@ static void* virtio_rdma_init_mmap_entry(struct virtio_rdma_dev *vdev,
 	return buf;
 }
 
+static int virtio_rdma_add_gid(const struct ib_gid_attr *attr, void **context)
+{
+	struct cmd_add_gid *cmd;
+	struct scatterlist in;
+	int rc;
+
+	cmd = kmalloc(sizeof(*cmd), GFP_KERNEL);
+	if (!cmd)
+		return -ENOMEM;
+
+	memcpy(cmd->gid, attr->gid.raw, sizeof(cmd->gid));
+	cmd->gid_type = attr->gid_type;
+	cmd->index = attr->index;
+	cmd->port_num = attr->port_num;
+
+	sg_init_one(&in, cmd, sizeof(*cmd));
+
+	rc = virtio_rdma_exec_cmd(to_vdev(attr->device), VIRTIO_CMD_ADD_GID, &in,
+							NULL);
+
+	printk("%s: add gid %d\n", __func__, attr->index);
+
+	kfree(cmd);
+	return rc;
+}
+
+static int virtio_rdma_del_gid(const struct ib_gid_attr *attr, void **context)
+{
+	struct cmd_del_gid *cmd;
+	struct scatterlist in;
+	int rc;
+
+	cmd = kmalloc(sizeof(*cmd), GFP_KERNEL);
+	if (!cmd)
+		return -ENOMEM;
+
+	cmd->index = attr->index;
+	cmd->port_num = attr->port_num;
+
+	sg_init_one(&in, cmd, sizeof(*cmd));
+
+	rc = virtio_rdma_exec_cmd(to_vdev(attr->device), VIRTIO_CMD_DEL_GID, &in,
+							NULL);
+
+	printk("%s: del gid %d\n", __func__, attr->index);
+
+	kfree(cmd);
+	return rc;
+}
+
 static int virtio_rdma_port_immutable(struct ib_device *ibdev, u32 port_num,
 				      struct ib_port_immutable *immutable)
 {
