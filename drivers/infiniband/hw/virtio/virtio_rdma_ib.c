@@ -150,6 +150,80 @@ static struct scatterlist* init_sg(void* buf, unsigned long nbytes) {
 	return sg;
 }
 
+static int virtio_rdma_dealloc_pd(struct ib_pd *pd, struct ib_udata *udata);
+
+static int virtio_rdma_alloc_pd(struct ib_pd *ibpd, struct ib_udata *udata)
+{
+	struct virtio_rdma_pd *pd = to_vpd(ibpd);
+	struct ib_device *ibdev = ibpd->device;
+	struct cmd_create_pd *cmd;
+	struct rsp_create_pd *rsp;
+	struct scatterlist out, in;
+	int rc;
+	struct virtio_rdma_ucontext *context = rdma_udata_to_drv_context(
+		udata, struct virtio_rdma_ucontext, ibucontext);
+
+	cmd = kmalloc(sizeof(*cmd), GFP_ATOMIC);
+	if (!cmd)
+		return -ENOMEM;
+
+	rsp = kmalloc(sizeof(*rsp), GFP_ATOMIC);
+	if (!rsp) {
+		kfree(cmd);
+		return -ENOMEM;
+	}
+
+	cmd->ctx_handle = context ? context->ctx_handle : 0;
+	sg_init_one(&in, cmd, sizeof(*cmd));
+
+	sg_init_one(&out, rsp, sizeof(*rsp));
+
+	rc = virtio_rdma_exec_cmd(to_vdev(ibdev), VIRTIO_CMD_CREATE_PD, &in,
+				  &out);
+	if (rc)
+		goto out;
+
+	pd->pd_handle = rsp->pdn;
+
+	if (udata) {
+		struct virtio_rdma_alloc_pd_uresp uresp = {};
+		if (ib_copy_to_udata(udata, &uresp, sizeof(uresp))) {
+			pr_warn("failed to copy back protection domain\n");
+			virtio_rdma_dealloc_pd(&pd->ibpd, udata);
+			return -EFAULT;
+		}
+	}
+
+	pr_info("%s: pd_handle=%d\n", __func__, pd->pd_handle);
+
+out:
+	kfree(rsp);
+	kfree(cmd);
+	return rc;
+}
+
+static int virtio_rdma_dealloc_pd(struct ib_pd *pd, struct ib_udata *udata)
+{
+	struct virtio_rdma_pd *vpd = to_vpd(pd);
+	struct ib_device *ibdev = pd->device;
+	struct cmd_destroy_pd *cmd;
+	struct scatterlist in;
+
+	pr_debug("%s:\n", __func__);
+
+	cmd = kmalloc(sizeof(*cmd), GFP_ATOMIC);
+	if (!cmd)
+		return -ENOMEM;
+
+	cmd->pdn = vpd->pd_handle;
+	sg_init_one(&in, cmd, sizeof(*cmd));
+
+	virtio_rdma_exec_cmd(to_vdev(ibdev), VIRTIO_CMD_DESTROY_PD, &in, NULL);
+
+	kfree(cmd);
+	return 0;
+}
+
 static int virtio_rdma_port_immutable(struct ib_device *ibdev, u32 port_num,
 				      struct ib_port_immutable *immutable)
 {
