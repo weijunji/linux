@@ -907,6 +907,315 @@ static void* virtio_rdma_init_mmap_entry(struct virtio_rdma_dev *vdev,
 	return buf;
 }
 
+struct ib_qp *virtio_rdma_create_qp(struct ib_pd *ibpd,
+				    struct ib_qp_init_attr *attr,
+				    struct ib_udata *udata)
+{
+	struct scatterlist in, out;
+	struct virtio_rdma_dev *vdev = to_vdev(ibpd->device);
+	struct virtio_rdma_pd *vpd = to_vpd(ibpd);
+	struct cmd_create_qp *cmd;
+	struct rsp_create_qp *rsp;
+	struct virtio_rdma_qp *vqp;
+	int rc, vqn;
+	struct ib_qp *ret;
+
+	if (!atomic_add_unless(&vdev->num_qp, 1, vdev->ib_dev.attrs.max_qp))
+		return ERR_PTR(-ENOMEM);
+
+	if (virtio_rdma_qp_chk_init(vdev, attr))
+		return ERR_PTR(-EINVAL);
+
+	cmd = kmalloc(sizeof(*cmd), GFP_ATOMIC);
+	if (!cmd)
+		return ERR_PTR(-ENOMEM);
+
+	rsp = kmalloc(sizeof(*rsp), GFP_ATOMIC);
+	if (!rsp) {
+		kfree(cmd);
+		return ERR_PTR(-ENOMEM);
+	}
+
+	vqp = kzalloc(sizeof(*vqp), GFP_ATOMIC);
+	if (!vqp) {
+		kfree(cmd);
+		kfree(rsp);
+		return ERR_PTR(-ENOMEM);
+	}
+
+	cmd->pdn = to_vpd(ibpd)->pd_handle;
+	cmd->qp_type = attr->qp_type;
+	cmd->sq_sig_type = attr->sq_sig_type;
+	cmd->max_send_wr = attr->cap.max_send_wr;
+	cmd->max_send_sge = attr->cap.max_send_sge;
+	cmd->send_cqn = to_vcq(attr->send_cq)->cq_handle;
+	cmd->max_recv_wr = attr->cap.max_recv_wr;
+	cmd->max_recv_sge = attr->cap.max_recv_sge;
+	cmd->recv_cqn = to_vcq(attr->recv_cq)->cq_handle;
+	cmd->is_srq = !!attr->srq;
+	cmd->srq_handle = 0; // Not support srq now
+	cmd->max_inline_data = attr->cap.max_inline_data;
+
+	sg_init_one(&in, cmd, sizeof(*cmd));
+	printk("%s: pdn %d\n", __func__, cmd->pdn);
+
+	sg_init_one(&out, rsp, sizeof(*rsp));
+
+	rc = virtio_rdma_exec_cmd(vdev, VIRTIO_CMD_CREATE_QP, &in,
+				  &out);
+	if (rc) {
+		ret = ERR_PTR(-EIO);
+		goto out_err;
+	}
+
+	vqp->type = vpd->type;
+	vqp->port = attr->port_num;
+	vqp->qp_handle = rsp->qpn;
+	vqp->ibqp.qp_num = rsp->qpn;
+
+	vqn = rsp->qpn;
+	vqp->sq = &vdev->qp_vqs[vqn * 2];
+	vqp->rq = &vdev->qp_vqs[vqn * 2 + 1];
+
+	if (udata) {
+		struct virtio_rdma_create_qp_uresp uresp = {};
+		struct virtio_rdma_ucontext *uctx = rdma_udata_to_drv_context(udata,
+			struct virtio_rdma_ucontext, ibucontext);
+		uint32_t per_size;
+		
+		per_size = sizeof(struct virtio_rdma_cmd_post_send) +
+				   sizeof(struct virtio_rdma_sge) * attr->cap.max_send_sge;
+		vqp->usq_buf_size = PAGE_ALIGN(per_size * attr->cap.max_send_wr);
+		vqp->usq_buf = virtio_rdma_init_mmap_entry(vdev, vqp->sq->vq,
+						&vqp->sq_entry, vqp->usq_buf_size, uctx,
+						&uresp.sq_size, &uresp.svq_used_off,
+						&uresp.svq_size, &vqp->usq_dma_addr);
+		if (!vqp->usq_buf)
+			goto out_err;
+
+		per_size = sizeof(struct virtio_rdma_cmd_post_recv) +
+				   sizeof(struct virtio_rdma_sge) * attr->cap.max_recv_sge;
+		vqp->urq_buf_size = PAGE_ALIGN(per_size * attr->cap.max_recv_wr);
+		vqp->urq_buf = virtio_rdma_init_mmap_entry(vdev, vqp->rq->vq,
+						&vqp->rq_entry, vqp->urq_buf_size, uctx,
+						&uresp.rq_size, &uresp.rvq_used_off,
+						&uresp.rvq_size, &vqp->urq_dma_addr);
+		if (!vqp->urq_buf) {
+			// TODO: pop sq entry
+			dma_free_coherent(vdev->vdev->dev.parent, vqp->usq_buf_size,
+							vqp->usq_buf, vqp->usq_dma_addr);
+			goto out_err;
+		}
+
+		uresp.sq_offset = rdma_user_mmap_get_offset(&vqp->sq_entry->rdma_entry);
+		uresp.sq_phys_addr = vqp->usq_dma_addr;
+		uresp.num_sqe = attr->cap.max_send_wr;
+		uresp.num_svqe = virtqueue_get_vring_size(vqp->sq->vq);
+		uresp.sq_idx = vqp->sq->vq->index;
+
+		uresp.rq_offset = rdma_user_mmap_get_offset(&vqp->rq_entry->rdma_entry);
+		uresp.rq_phys_addr = vqp->urq_dma_addr;
+		uresp.num_rqe = attr->cap.max_recv_wr;
+		uresp.num_rvqe = virtqueue_get_vring_size(vqp->rq->vq);
+		uresp.rq_idx = vqp->rq->vq->index;
+
+		uresp.page_size = PAGE_SIZE;
+		uresp.qpn = vqp->qp_handle;
+
+		if (udata->outlen < sizeof(uresp)) {
+			rc = -EINVAL;
+			goto out_err_u;
+		}
+		rc = ib_copy_to_udata(udata, &uresp, sizeof(uresp));
+		if (rc)
+			goto out_err_u;
+	}
+
+	pr_info("%s: qpn 0x%x wq %d rq %d\n", __func__, rsp->qpn,
+	        vqp->sq->vq->index, vqp->rq->vq->index);
+	ret = &vqp->ibqp;
+	goto out;
+
+out_err_u:
+	dma_free_coherent(vdev->vdev->dev.parent, vqp->usq_buf_size,
+					vqp->usq_buf, vqp->usq_dma_addr);
+	dma_free_coherent(vdev->vdev->dev.parent, vqp->urq_buf_size,
+					vqp->urq_buf, vqp->urq_dma_addr);
+	rdma_user_mmap_entry_remove(&vqp->sq_entry->rdma_entry);
+	rdma_user_mmap_entry_remove(&vqp->rq_entry->rdma_entry);
+out_err:
+	kfree(vqp);
+out:
+	kfree(rsp);
+	kfree(cmd);
+	return ret;
+}
+
+int virtio_rdma_destroy_qp(struct ib_qp *ibqp, struct ib_udata *udata)
+{
+	struct virtio_rdma_dev *vdev = to_vdev(ibqp->device);
+	struct virtio_rdma_qp *vqp = to_vqp(ibqp);
+	struct scatterlist in;
+	struct cmd_destroy_qp *cmd;
+	int rc;
+
+	pr_info("%s: qpn %d\n", __func__, vqp->qp_handle);
+
+	cmd = kmalloc(sizeof(*cmd), GFP_ATOMIC);
+	if (!cmd)
+		return -ENOMEM;
+
+	cmd->qpn = vqp->qp_handle;
+
+	sg_init_one(&in, cmd, sizeof(*cmd));
+
+	rc = virtio_rdma_exec_cmd(vdev, VIRTIO_CMD_DESTROY_QP,
+	                          &in, NULL);
+
+	if (udata) {
+		dma_free_coherent(vdev->vdev->dev.parent, vqp->usq_buf_size,
+						vqp->usq_buf, vqp->usq_dma_addr);
+		dma_free_coherent(vdev->vdev->dev.parent, vqp->urq_buf_size,
+						vqp->urq_buf, vqp->urq_dma_addr);
+		rdma_user_mmap_entry_remove(&vqp->sq_entry->rdma_entry);
+		rdma_user_mmap_entry_remove(&vqp->rq_entry->rdma_entry);
+	}
+
+	atomic_dec(&vdev->num_qp);
+
+	kfree(cmd);
+	return rc;
+}
+
+int virtio_rdma_modify_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr,
+			  int attr_mask, struct ib_udata *udata)
+{
+	struct scatterlist in;
+	struct cmd_modify_qp *cmd;
+	int rc;
+
+	pr_info("%s: qpn %d\n", __func__, to_vqp(ibqp)->qp_handle);
+
+	cmd = kzalloc(sizeof(*cmd), GFP_ATOMIC);
+	if (!cmd)
+		return -ENOMEM;
+
+	cmd->qpn = to_vqp(ibqp)->qp_handle;
+	cmd->attr_mask = attr_mask & ((1 << 21) - 1);
+
+	// TODO: copy based on attr_mask
+	cmd->attrs.qp_state = attr->qp_state;
+	cmd->attrs.cur_qp_state = attr->cur_qp_state;
+	cmd->attrs.path_mtu = attr->path_mtu;
+	cmd->attrs.path_mig_state = attr->path_mig_state;
+	cmd->attrs.qkey = attr->qkey;
+	cmd->attrs.rq_psn = attr->rq_psn;
+	cmd->attrs.sq_psn = attr->sq_psn;
+	cmd->attrs.dest_qp_num = attr->dest_qp_num;
+	cmd->attrs.qp_access_flags = attr->qp_access_flags;
+	cmd->attrs.pkey_index = attr->pkey_index;
+	cmd->attrs.alt_pkey_index = attr->alt_pkey_index;
+	cmd->attrs.en_sqd_async_notify = attr->en_sqd_async_notify;
+	cmd->attrs.sq_draining = attr->sq_draining;
+	cmd->attrs.max_rd_atomic = attr->max_rd_atomic;
+	cmd->attrs.max_dest_rd_atomic = attr->max_dest_rd_atomic;
+	cmd->attrs.min_rnr_timer = attr->min_rnr_timer;
+	cmd->attrs.port_num = attr->port_num;
+	cmd->attrs.timeout = attr->timeout;
+	cmd->attrs.retry_cnt = attr->retry_cnt;
+	cmd->attrs.rnr_retry = attr->rnr_retry;
+	cmd->attrs.alt_port_num = attr->alt_port_num;
+	cmd->attrs.alt_timeout = attr->alt_timeout;
+	cmd->attrs.rate_limit = attr->rate_limit;
+	ib_qp_cap_to_virtio_rdma(&cmd->attrs.cap, &attr->cap);
+	rdma_ah_attr_to_virtio_rdma(&cmd->attrs.ah_attr, &attr->ah_attr);
+	rdma_ah_attr_to_virtio_rdma(&cmd->attrs.alt_ah_attr, &attr->alt_ah_attr);
+
+	sg_init_one(&in, cmd, sizeof(*cmd));
+
+	rc = virtio_rdma_exec_cmd(to_vdev(ibqp->device), VIRTIO_CMD_MODIFY_QP,
+	                          &in, NULL);
+
+	kfree(cmd);
+	return rc;
+}
+
+int virtio_rdma_query_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr,
+			 int attr_mask, struct ib_qp_init_attr *init_attr)
+{
+	struct scatterlist in, out;
+	struct virtio_rdma_qp *vqp = to_vqp(ibqp);
+	struct cmd_query_qp *cmd;
+	struct rsp_query_qp *rsp;
+	int rc;
+
+	cmd = kzalloc(sizeof(*cmd), GFP_ATOMIC);
+	if (!cmd)
+		return -ENOMEM;
+
+	rsp = kmalloc(sizeof(*rsp), GFP_ATOMIC);
+	if (!rsp) {
+		kfree(cmd);
+		return -ENOMEM;
+	}
+
+	cmd->qpn = vqp->qp_handle;
+	cmd->attr_mask = attr_mask;
+
+	sg_init_one(&in, cmd, sizeof(*cmd));
+	sg_init_one(&out, rsp, sizeof(*rsp));
+	rc = virtio_rdma_exec_cmd(to_vdev(ibqp->device), VIRTIO_CMD_QUERY_QP,
+	                          &in, &out);
+
+	if (rc)
+		goto out;
+
+	attr->qp_state = rsp->attr.qp_state;
+	attr->cur_qp_state = rsp->attr.cur_qp_state;
+	attr->path_mtu = rsp->attr.path_mtu;
+	attr->path_mig_state = rsp->attr.path_mig_state;
+	attr->qkey = rsp->attr.qkey;
+	attr->rq_psn = rsp->attr.rq_psn;
+	attr->sq_psn = rsp->attr.sq_psn;
+	attr->dest_qp_num = rsp->attr.dest_qp_num;
+	attr->qp_access_flags = rsp->attr.qp_access_flags;
+	attr->pkey_index = rsp->attr.pkey_index;
+	attr->alt_pkey_index = rsp->attr.alt_pkey_index;
+	attr->en_sqd_async_notify = rsp->attr.en_sqd_async_notify;
+	attr->sq_draining = rsp->attr.sq_draining;
+	attr->max_rd_atomic = rsp->attr.max_rd_atomic;
+	attr->max_dest_rd_atomic = rsp->attr.max_dest_rd_atomic;
+	attr->min_rnr_timer = rsp->attr.min_rnr_timer;
+	attr->port_num = rsp->attr.port_num;
+	attr->timeout = rsp->attr.timeout;
+	attr->retry_cnt = rsp->attr.retry_cnt;
+	attr->rnr_retry = rsp->attr.rnr_retry;
+	attr->alt_port_num = rsp->attr.alt_port_num;
+	attr->alt_timeout = rsp->attr.alt_timeout;
+	attr->rate_limit = rsp->attr.rate_limit;
+	virtio_rdma_to_ib_qp_cap(&attr->cap, &rsp->attr.cap);
+	virtio_rdma_to_rdma_ah_attr(&attr->ah_attr, &rsp->attr.ah_attr);
+	virtio_rdma_to_rdma_ah_attr(&attr->alt_ah_attr, &rsp->attr.alt_ah_attr);
+
+out:
+	init_attr->event_handler = vqp->ibqp.event_handler;
+	init_attr->qp_context = vqp->ibqp.qp_context;
+	init_attr->send_cq = vqp->ibqp.send_cq;
+	init_attr->recv_cq = vqp->ibqp.recv_cq;
+	init_attr->srq = vqp->ibqp.srq;
+	init_attr->xrcd = NULL;
+	init_attr->cap = attr->cap;
+	// FIXME: not zero
+	init_attr->sq_sig_type = 0;
+	init_attr->qp_type = vqp->ibqp.qp_type;
+	init_attr->create_flags = 0;
+	init_attr->port_num = vqp->port;
+
+	kfree(cmd);
+	kfree(rsp);
+	return rc;
+}
+
 static int virtio_rdma_add_gid(const struct ib_gid_attr *attr, void **context)
 {
 	struct cmd_add_gid *cmd;
