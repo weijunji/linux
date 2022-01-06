@@ -957,6 +957,50 @@ static int virtio_rdma_del_gid(const struct ib_gid_attr *attr, void **context)
 	return rc;
 }
 
+static int virtio_rdma_create_ah(struct ib_ah *ibah,
+				    struct rdma_ah_init_attr *init_attr,
+				    struct ib_udata *udata)
+{
+	struct virtio_rdma_dev *vdev = to_vdev(ibah->device);
+	struct virtio_rdma_ah *ah = to_vah(ibah);
+	const struct ib_global_route *grh;
+	u32 port_num = rdma_ah_get_port_num(init_attr->ah_attr);
+
+	if (!(rdma_ah_get_ah_flags(init_attr->ah_attr) & IB_AH_GRH))
+		return -EINVAL;
+
+	grh = rdma_ah_read_grh(init_attr->ah_attr);
+	if ((init_attr->ah_attr->type != RDMA_AH_ATTR_TYPE_ROCE)  ||
+	    rdma_is_multicast_addr((struct in6_addr *)grh->dgid.raw))
+		return -EINVAL;
+
+	if (!atomic_add_unless(&vdev->num_ah, 1, vdev->ib_dev.attrs.max_ah))
+		return -ENOMEM;
+
+	ah->av.port = port_num;
+	ah->av.pdn = to_vpd(ibah->pd)->pd_handle;
+	ah->av.src_path_bits = rdma_ah_get_path_bits(init_attr->ah_attr);
+	ah->av.src_path_bits |= 0x80;
+	ah->av.gid_index = grh->sgid_index;
+	ah->av.hop_limit = grh->hop_limit;
+	ah->av.sl_tclass_flowlabel = (grh->traffic_class << 20) |
+				      grh->flow_label;
+	memcpy(ah->av.dgid, grh->dgid.raw, 16);
+	memcpy(ah->av.dmac, init_attr->ah_attr->roce.dmac, ETH_ALEN);
+
+	return 0;
+}
+
+static int virtio_rdma_destroy_ah(struct ib_ah *ah, u32 flags)
+{
+	struct virtio_rdma_dev *vdev = to_vdev(ah->device);
+
+	printk("%s:\n", __func__);
+	atomic_dec(&vdev->num_ah);
+
+	return 0;
+}
+
 static int virtio_rdma_port_immutable(struct ib_device *ibdev, u32 port_num,
 				      struct ib_port_immutable *immutable)
 {
