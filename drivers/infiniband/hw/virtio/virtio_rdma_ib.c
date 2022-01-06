@@ -1345,6 +1345,45 @@ static int virtio_rdma_query_pkey(struct ib_device *ibdev, u32 port, u16 index,
 	return rc;
 }
 
+int virtio_rdma_poll_cq(struct ib_cq *ibcq, int num_entries, struct ib_wc *wc)
+{
+	struct virtio_rdma_cq *vcq = to_vcq(ibcq);
+	struct virtio_rdma_cqe *cqe;
+	int i = 0;
+	unsigned long flags;
+	unsigned int tmp;
+	struct scatterlist sg;
+	struct virtqueue *vq = vcq->vq->vq;
+
+	spin_lock_irqsave(&vcq->lock, flags);
+	while (i < num_entries) {
+		cqe = virtqueue_get_buf(vq, &tmp);
+		if (!cqe)
+			break;
+
+		wc[i].wr_id = cqe->wr_id;
+		wc[i].status = cqe->status;
+		wc[i].opcode = cqe->opcode;
+		wc[i].vendor_err = cqe->vendor_err;
+		wc[i].byte_len = cqe->byte_len;
+		// TODO: wc[i].qp
+		wc[i].ex.imm_data = cqe->ex.imm_data;
+		wc[i].src_qp = cqe->src_qp;
+		wc[i].slid = cqe->slid;
+		wc[i].wc_flags = cqe->wc_flags;
+		wc[i].pkey_index = cqe->pkey_index;
+		wc[i].sl = cqe->sl;
+		wc[i].dlid_path_bits = cqe->dlid_path_bits;
+		wc[i].port_num = cqe->port_num;
+
+		sg_init_one(&sg, cqe, sizeof(*cqe));
+		virtqueue_add_inbuf(vq, &sg, 1, cqe, GFP_KERNEL);
+		i++;
+	}
+	spin_unlock_irqrestore(&vcq->lock, flags);
+	return i;
+}
+
 int virtio_rdma_post_recv(struct ib_qp *ibqp, const struct ib_recv_wr *wr,
 			  const struct ib_recv_wr **bad_wr)
 {
