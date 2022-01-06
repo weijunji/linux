@@ -481,6 +481,386 @@ int virtio_rdma_req_notify_cq(struct ib_cq *ibcq,
 	return 0;
 }
 
+struct ib_mr *virtio_rdma_get_dma_mr(struct ib_pd *pd, int flags)
+{
+	struct virtio_rdma_mr *mr;
+	struct scatterlist in, out;
+	struct cmd_create_mr *cmd;
+	struct rsp_create_mr *rsp;
+	int rc;
+
+	mr = kzalloc(sizeof(*mr), GFP_ATOMIC);
+	if (!mr)
+		return ERR_PTR(-ENOMEM);
+
+	cmd = kmalloc(sizeof(*cmd), GFP_ATOMIC);
+	if (!cmd) {
+		kfree(mr);
+		return ERR_PTR(-ENOMEM);
+	}
+
+	rsp = kmalloc(sizeof(*rsp), GFP_ATOMIC);
+	if (!cmd) {
+		kfree(mr);
+		kfree(cmd);
+		return ERR_PTR(-ENOMEM);
+	}
+
+	cmd->pdn = to_vpd(pd)->pd_handle;
+	cmd->access_flags = flags;
+	sg_init_one(&in, cmd, sizeof(*cmd));
+	sg_init_one(&out, rsp, sizeof(*rsp));
+
+	rc = virtio_rdma_exec_cmd(to_vdev(pd->device), VIRTIO_CMD_GET_DMA_MR,
+				  &in, &out);
+	pr_info("%s: mr_handle=0x%x\n", __func__, rsp->mrn);
+	if (rc) {
+		kfree(rsp);
+		kfree(mr);
+		kfree(cmd);
+		return ERR_PTR(rc);
+	}
+
+	mr->mr_handle = rsp->mrn;
+	mr->ibmr.lkey = rsp->lkey;
+	mr->ibmr.rkey = rsp->rkey;
+	mr->type = VIRTIO_RDMA_TYPE_KERNEL;
+	to_vpd(pd)->type = VIRTIO_RDMA_TYPE_KERNEL;
+	mr->pages = NULL;
+	mr->pages_k = NULL;
+
+	kfree(cmd);
+	kfree(rsp);
+
+	return &mr->ibmr;
+}
+
+static uint64_t** virtio_rdma_init_page_tbl(struct virtio_rdma_dev *dev,
+			uint32_t npages, uint64_t*** pages_dma, dma_addr_t* dma_pages_p) {
+	uint32_t nl2 = npages == 0 ? 0 : (npages - 1) / 512 + 1;
+	uint64_t **pages;
+	uint64_t **pages_k;
+	dma_addr_t dma_pages, l2_dma_addr;
+	uint32_t i;
+
+	// l1
+	pages = dma_alloc_coherent(dev->vdev->dev.parent, PAGE_SIZE, &dma_pages, GFP_KERNEL);
+	if (pages == NULL) {
+		return NULL;
+	}
+	// l2
+	pages_k = kzalloc(PAGE_SIZE, GFP_KERNEL);
+	for (i = 0; i < nl2; i++) {
+		pages_k[i] = dma_alloc_coherent(dev->vdev->dev.parent, PAGE_SIZE, &l2_dma_addr, GFP_KERNEL);
+		pages[i] = (uint64_t *)l2_dma_addr;
+		if(pages_k[i] == NULL)
+			goto err;
+	}
+
+	*pages_dma = pages;
+	*dma_pages_p = dma_pages;
+	return pages_k;
+err:
+	// TODO: clean up
+	return NULL;
+}
+
+static struct ib_mr *virtio_rdma_alloc_mr(struct ib_pd *pd, enum ib_mr_type mr_type,
+				   u32 max_num_sg)
+{
+	struct virtio_rdma_dev *dev = to_vdev(pd->device);
+	struct virtio_rdma_pd *vpd = to_vpd(pd);
+	struct virtio_rdma_mr *mr;
+	struct scatterlist in, out;
+	struct cmd_create_mr *cmd;
+	struct rsp_create_mr *rsp;
+	struct ib_mr *ret = ERR_PTR(-ENOMEM);
+	int rc;
+
+	pr_info("%s: mr_type %d, max_num_sg %d\n", __func__, mr_type,
+	       max_num_sg);
+
+	if (mr_type != IB_MR_TYPE_MEM_REG)
+		return ERR_PTR(-EINVAL);
+
+	mr = kzalloc(sizeof(*mr), GFP_ATOMIC);
+	if (!mr)
+		goto err;
+
+	cmd = kmalloc(sizeof(*cmd), GFP_ATOMIC);
+	if (!cmd)
+		goto err_cmd;
+
+	rsp = kmalloc(sizeof(*rsp), GFP_ATOMIC);
+	if (!cmd)
+		goto err_rsp;
+
+	mr->pages_k = virtio_rdma_init_page_tbl(dev, max_num_sg, &mr->pages, &mr->dma_pages);
+	if (!mr->pages_k) {
+		pr_err("alloc page_tables failed\n");
+		goto err_pages;
+	}
+	mr->max_pages = max_num_sg;
+	mr->npages = 0;
+
+	memset(cmd, 0, sizeof(*cmd));
+	cmd->pdn = to_vpd(pd)->pd_handle;
+	cmd->max_num_sg = max_num_sg;
+
+	sg_init_one(&in, cmd, sizeof(*cmd));
+	sg_init_one(&out, rsp, sizeof(*rsp));
+
+	rc = virtio_rdma_exec_cmd(to_vdev(pd->device), VIRTIO_CMD_CREATE_MR,
+				  &in, &out);
+
+	if (rc) {
+		kfree(rsp);
+		kfree(mr);
+		kfree(cmd);
+		return ERR_PTR(rc);
+	}
+
+	mr->mr_handle = rsp->mrn;
+	mr->ibmr.lkey = rsp->lkey;
+	mr->ibmr.rkey = rsp->rkey;
+	mr->type = VIRTIO_RDMA_TYPE_KERNEL;
+	vpd->type = VIRTIO_RDMA_TYPE_KERNEL;
+
+	pr_info("%s: mr_handle=0x%x\n", __func__, mr->mr_handle);
+
+	kfree(cmd);
+	kfree(rsp);
+
+	return &mr->ibmr;
+
+err_pages:
+	kfree(rsp);
+err_rsp:
+	kfree(cmd);
+err_cmd:
+	kfree(mr);
+err:
+	return ret;
+}
+
+static int virtio_rdma_set_page(struct ib_mr *ibmr, u64 addr)
+{
+	struct virtio_rdma_mr *mr = to_vmr(ibmr);
+
+	if (mr->npages == mr->max_pages)
+		return -ENOMEM;
+
+	mr->pages_k[mr->npages / 512][mr->npages % 512] = addr;
+	pr_info("set page %llx\n", addr);
+	mr->npages++;
+	return 0;
+}
+
+int virtio_rdma_map_mr_sg(struct ib_mr *ibmr, struct scatterlist *sg,
+			  int sg_nents, unsigned int *sg_offset)
+{
+	struct virtio_rdma_mr *mr = to_vmr(ibmr);
+	struct cmd_map_mr_sg *cmd;
+	struct rsp_map_mr_sg *rsp;
+	struct scatterlist in, out;
+	int rc;
+
+	cmd = kmalloc(sizeof(*cmd), GFP_KERNEL);
+	if (!cmd)
+		return -ENOMEM;
+	rsp = kmalloc(sizeof(*rsp), GFP_KERNEL);
+	if (!rsp) {
+		rc = -ENOMEM;
+		goto out_rsp;
+	}
+
+	mr->npages = 0;
+
+	rc = ib_sg_to_pages(ibmr, sg, sg_nents, sg_offset, virtio_rdma_set_page);
+	if (rc < 0) {
+		pr_err("could not map sg to pages\n");
+		rc = -EINVAL;
+		goto out;
+	}
+
+	pr_info("%s: start %llx npages %d\n", __func__, sg[0].dma_address, mr->npages);
+
+	cmd->mrn = mr->mr_handle;
+	cmd->start = (uint64_t)ibmr->iova;
+	cmd->length = ibmr->length;
+	cmd->npages = mr->npages;
+	cmd->pages = mr->dma_pages;
+
+	sg_init_one(&in, cmd, sizeof(*cmd));
+	sg_init_one(&out, rsp, sizeof(*rsp));
+
+	// TODO: no need to call
+	rc = virtio_rdma_exec_cmd(to_vdev(ibmr->device), VIRTIO_CMD_MAP_MR_SG,
+				  &in, &out);
+
+	if (rc)
+		rc = -EIO;
+
+out:
+	kfree(rsp);
+out_rsp:
+	kfree(cmd);
+	return rc;
+}
+
+struct ib_mr *virtio_rdma_reg_user_mr(struct ib_pd *pd, u64 start, u64 length,
+				      u64 virt_addr, int access_flags,
+				      struct ib_udata *udata)
+{
+	struct virtio_rdma_dev *dev = to_vdev(pd->device);
+	struct virtio_rdma_pd *vpd = to_vpd(pd);
+	struct virtio_rdma_mr *mr;
+	struct ib_umem *umem;
+	struct ib_mr *ret = ERR_PTR(-ENOMEM);
+	struct sg_dma_page_iter sg_iter;
+	struct scatterlist in, out;
+	struct cmd_reg_user_mr *cmd;
+	struct rsp_reg_user_mr *rsp;
+	int rc;
+	uint32_t npages;
+
+	pr_info("%s: start %llx, len %llu, addr %llx\n", __func__, start, length,
+	        virt_addr);
+
+	umem = ib_umem_get(pd->device, start, length, access_flags);
+	if (IS_ERR(umem)) {
+		pr_err("could not get umem for mem region\n");
+		ret = ERR_CAST(umem);
+		goto out;
+	}
+
+	npages = ib_umem_num_pages(umem);
+	if (npages < 0 || npages > 512 * 512) { // two level page table
+		pr_err("bad npages");
+		ret = ERR_PTR(-EINVAL);
+		goto out;
+	}
+
+	pr_info("npages = %u\n", npages);
+
+	cmd = kmalloc(sizeof(*cmd), GFP_ATOMIC);
+	if (!cmd) 
+		return ERR_PTR(-ENOMEM);
+
+	rsp = kmalloc(sizeof(*rsp), GFP_ATOMIC);
+	if (!rsp)
+		goto err_rsp;
+
+	mr = kzalloc(sizeof(*mr), GFP_ATOMIC);
+	if (!mr) {
+		ret = ERR_PTR(-ENOMEM);
+		goto err;
+	}
+
+	mr->pages_k = virtio_rdma_init_page_tbl(dev, npages, &mr->pages, &mr->dma_pages);
+	if (!mr->pages_k) {
+		pr_err("dma alloc pages failed\n");
+		goto err;
+	}
+
+	mr->max_pages = npages;
+	mr->iova = virt_addr;
+	mr->size = length;
+	mr->umem = umem;
+
+	mr->npages = 0;
+	for_each_sg_dma_page(umem->sg_head.sgl, &sg_iter, umem->nmap, 0) {
+		dma_addr_t addr = sg_page_iter_dma_address(&sg_iter);
+		mr->pages_k[mr->npages / 512][mr->npages % 512] = addr;
+		pr_info("set page %llx\n", addr);
+		mr->npages++;
+	}
+
+	cmd->pdn = to_vpd(pd)->pd_handle;
+	cmd->access_flags = access_flags;
+	cmd->start = start;
+	cmd->length = length;
+	cmd->virt_addr = virt_addr;
+	cmd->pages = mr->dma_pages;
+	cmd->npages = npages;
+
+	sg_init_one(&in, cmd, sizeof(*cmd));
+	sg_init_one(&out, rsp, sizeof(*rsp));
+
+	rc = virtio_rdma_exec_cmd(to_vdev(pd->device), VIRTIO_CMD_REG_USER_MR,
+				  &in, &out);
+
+	if (rc) {
+		ib_umem_release(umem);
+		kfree(rsp);
+		kfree(mr);
+		kfree(cmd);
+		return ERR_PTR(EIO);
+	}
+
+	mr->mr_handle = rsp->mrn;
+	mr->ibmr.lkey = rsp->lkey;
+	mr->ibmr.rkey = rsp->rkey;
+	mr->type = VIRTIO_RDMA_TYPE_USER;
+	vpd->type = VIRTIO_RDMA_TYPE_USER;
+
+	printk("%s: mr_handle=0x%x\n", __func__, mr->mr_handle);
+
+	ret = &mr->ibmr;
+
+err:
+	kfree(cmd);
+err_rsp:
+	kfree(rsp);
+out:
+	return ret;
+}
+
+int virtio_rdma_dereg_mr(struct ib_mr *ibmr, struct ib_udata *udata)
+{
+	struct virtio_rdma_mr *mr = to_vmr(ibmr);
+	struct scatterlist in;
+	struct cmd_dereg_mr *cmd;
+	int rc = -ENOMEM;
+	int i;
+
+	cmd = kmalloc(sizeof(*cmd), GFP_ATOMIC);
+	if (!cmd)
+		return -ENOMEM;
+
+	cmd->mrn = mr->mr_handle;
+	cmd->is_user_mr = mr->type == VIRTIO_RDMA_TYPE_USER;
+
+	sg_init_one(&in, cmd, sizeof(*cmd));
+
+	rc = virtio_rdma_exec_cmd(to_vdev(ibmr->device), VIRTIO_CMD_DEREG_MR,
+	                          &in, NULL);
+	if (rc) {
+		rc = -EIO;
+		goto out;
+	}
+
+	if (mr->pages_k != NULL) {
+		for (i = 0; i < 512; i++) {
+			if (mr->pages_k[i] != NULL)
+				dma_free_coherent(to_vdev(ibmr->device)->vdev->dev.parent,
+								PAGE_SIZE, mr->pages_k[i], GFP_KERNEL);
+			else
+				break;
+		}
+		kfree(mr->pages_k);
+		dma_free_coherent(to_vdev(ibmr->device)->vdev->dev.parent, PAGE_SIZE,
+						mr->pages, GFP_KERNEL);
+	}
+
+	if (mr->type == VIRTIO_RDMA_TYPE_USER)
+		ib_umem_release(mr->umem);
+
+out:
+	kfree(cmd);
+	return rc;
+}
+
 static void* virtio_rdma_init_mmap_entry(struct virtio_rdma_dev *vdev,
 		struct virtqueue *vq,
 		struct virtio_rdma_user_mmap_entry** entry_, int buf_size,
