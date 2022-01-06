@@ -420,6 +420,52 @@ int virtio_rdma_req_notify_cq(struct ib_cq *ibcq,
 	return 0;
 }
 
+static void* virtio_rdma_init_mmap_entry(struct virtio_rdma_dev *vdev,
+		struct virtqueue *vq,
+		struct virtio_rdma_user_mmap_entry** entry_, int buf_size,
+		struct virtio_rdma_ucontext* vctx, __u64* size, __u64* used_off,
+		__u32* vq_size, dma_addr_t *dma_addr)
+{
+	void* buf = NULL;
+	int rc;
+	size_t total_size;
+	struct virtio_rdma_user_mmap_entry* entry;
+
+	total_size = PAGE_ALIGN(buf_size);
+	buf = dma_alloc_coherent(vdev->vdev->dev.parent, total_size,
+							dma_addr, GFP_KERNEL);
+	if (!buf)
+		return NULL;
+
+	entry = kzalloc(sizeof(*entry), GFP_KERNEL);
+	if (!entry) {
+		dma_free_coherent(vdev->vdev->dev.parent, total_size,
+						buf, *dma_addr);
+		return NULL;
+	}
+
+	entry->type = VIRTIO_RDMA_MMAP_QP;
+	entry->queue = vq;
+	entry->ubuf = buf;
+	entry->ubuf_size = PAGE_ALIGN(buf_size);
+
+	*used_off = virtqueue_get_used_addr(vq) - virtqueue_get_desc_addr(vq);
+	*vq_size = PAGE_ALIGN(vring_size(virtqueue_get_vring_size(vq), SMP_CACHE_BYTES));
+	total_size += *vq_size + PAGE_SIZE;
+
+	rc = rdma_user_mmap_entry_insert(&vctx->ibucontext, &entry->rdma_entry,
+			total_size);
+	if (rc) {
+		dma_free_coherent(vdev->vdev->dev.parent, total_size,
+						buf, *dma_addr);
+		return NULL;
+	}
+
+	*size = total_size;
+	*entry_ = entry;
+	return buf;
+}
+
 static int virtio_rdma_port_immutable(struct ib_device *ibdev, u32 port_num,
 				      struct ib_port_immutable *immutable)
 {
