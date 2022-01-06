@@ -1266,6 +1266,63 @@ static int virtio_rdma_del_gid(const struct ib_gid_attr *attr, void **context)
 	return rc;
 }
 
+int virtio_rdma_alloc_ucontext(struct ib_ucontext *uctx, struct ib_udata *udata)
+{
+	struct scatterlist in, out;
+	struct cmd_create_uc *cmd;
+	struct rsp_create_uc *rsp;
+	struct virtio_rdma_ucontext *vuc = to_vucontext(uctx);
+	int rc;
+	
+	cmd = kmalloc(sizeof(*cmd), GFP_ATOMIC);
+	if (!cmd)
+		return -ENOMEM;
+
+	rsp = kmalloc(sizeof(*rsp), GFP_ATOMIC);
+	if (!rsp) {
+		kfree(cmd);
+		return -ENOMEM;
+	}
+
+	// TODO: init uar & set cmd->pfn
+	sg_init_one(&in, cmd, sizeof(*cmd));
+	sg_init_one(&out, rsp, sizeof(*rsp));
+
+	rc = virtio_rdma_exec_cmd(to_vdev(uctx->device), VIRTIO_CMD_CREATE_UC, &in,
+				  &out);
+
+	if (rc) {
+		rc = -EIO;
+		goto out;
+	}
+
+	vuc->ctx_handle = rsp->ctx_handle;
+
+out:
+	kfree(rsp);
+	kfree(cmd);
+	return rc;
+}
+
+static void virtio_rdma_dealloc_ucontext(struct ib_ucontext *ibcontext)
+{
+	struct scatterlist in;
+	struct cmd_dealloc_uc *cmd;
+	struct virtio_rdma_ucontext *vuc = to_vucontext(ibcontext);
+	
+	cmd = kmalloc(sizeof(*cmd), GFP_ATOMIC);
+	if (!cmd)
+		return;
+
+	cmd->ctx_handle = vuc->ctx_handle;
+	sg_init_one(&in, cmd, sizeof(*cmd));
+
+	virtio_rdma_exec_cmd(to_vdev(ibcontext->device), VIRTIO_CMD_DEALLOC_UC, &in,
+				  NULL);
+
+	kfree(cmd);
+}
+
 static int virtio_rdma_create_ah(struct ib_ah *ibah,
 				    struct rdma_ah_init_attr *init_attr,
 				    struct ib_udata *udata)
