@@ -224,6 +224,202 @@ static int virtio_rdma_dealloc_pd(struct ib_pd *pd, struct ib_udata *udata)
 	return 0;
 }
 
+static int virtio_rdma_create_cq(struct ib_cq *ibcq,
+				    const struct ib_cq_init_attr *attr,
+				    struct ib_udata *udata)
+{
+	struct scatterlist in, out;
+	struct virtio_rdma_cq *vcq = to_vcq(ibcq);
+	struct virtio_rdma_dev *vdev = to_vdev(ibcq->device);
+	struct cmd_create_cq *cmd;
+	struct rsp_create_cq *rsp;
+	struct scatterlist sg;
+	int i, rc = -ENOMEM;
+	int entries = attr->cqe;
+	size_t total_size;
+	struct virtio_rdma_user_mmap_entry* entry = NULL;
+
+	if (!atomic_add_unless(&vdev->num_cq, 1, ibcq->device->attrs.max_cq))
+		return -ENOMEM;
+
+	total_size = vcq->queue_size = PAGE_ALIGN(entries * sizeof(*vcq->queue));
+	vcq->queue = dma_alloc_coherent(vdev->vdev->dev.parent, vcq->queue_size,
+					&vcq->dma_addr, GFP_KERNEL);
+	if (!vcq->queue)
+		return -ENOMEM;
+
+	cmd = kmalloc(sizeof(*cmd), GFP_ATOMIC);
+	if (!cmd)
+		goto err_cmd;
+
+	rsp = kmalloc(sizeof(*rsp), GFP_ATOMIC);
+	if (!rsp)
+		goto err_rsp;
+	
+	if (udata) {
+		entry = kzalloc(sizeof(*entry), GFP_ATOMIC);
+		if (!entry)
+			goto err;
+	}
+
+	cmd->cqe = attr->cqe;
+	sg_init_one(&in, cmd, sizeof(*cmd));
+	sg_init_one(&out, rsp, sizeof(*rsp));
+
+	rc = virtio_rdma_exec_cmd(vdev, VIRTIO_CMD_CREATE_CQ, &in,
+				  &out);
+	if (rc)
+		goto err;
+
+	vcq->cq_handle = rsp->cqn;
+	vcq->ibcq.cqe = entries;
+	vcq->vq = &vdev->cq_vqs[rsp->cqn];
+	vcq->num_cqe = entries;
+	vdev->cqs[rsp->cqn] = vcq;
+
+	if (udata) {
+		struct virtio_rdma_create_cq_uresp uresp = {};
+		struct virtio_rdma_ucontext *uctx = rdma_udata_to_drv_context(udata,
+			struct virtio_rdma_ucontext, ibucontext);
+
+		entry->type = VIRTIO_RDMA_MMAP_CQ;
+		entry->queue = vcq->vq->vq;
+		entry->ubuf = vcq->queue;
+		entry->ubuf_size = vcq->queue_size;
+
+		uresp.used_off = virtqueue_get_used_addr(vcq->vq->vq) -
+					virtqueue_get_desc_addr(vcq->vq->vq);
+
+		uresp.vq_size = PAGE_ALIGN(vring_size(virtqueue_get_vring_size(vcq->vq->vq), SMP_CACHE_BYTES));
+		total_size += uresp.vq_size;
+
+		rc = rdma_user_mmap_entry_insert(&uctx->ibucontext, &entry->rdma_entry,
+			total_size);
+		if (rc)
+			goto err;
+
+		uresp.offset = rdma_user_mmap_get_offset(&entry->rdma_entry);
+		uresp.cq_phys_addr = virt_to_phys(vcq->queue);
+		uresp.num_cqe = entries;
+		uresp.num_cvqe = virtqueue_get_vring_size(vcq->vq->vq);
+		uresp.cq_size = total_size;
+
+		if (udata->outlen < sizeof(uresp)) {
+			rc = -EINVAL;
+			goto err;
+		}
+		rc = ib_copy_to_udata(udata, &uresp, sizeof(uresp));
+		if (rc)
+			goto err;
+
+		vcq->entry = &entry->rdma_entry;
+	} else {
+		for(i = 0; i < entries; i++) {
+			sg_init_one(&sg, vcq->queue + i, sizeof(*vcq->queue));
+			virtqueue_add_inbuf(vcq->vq->vq, &sg, 1, vcq->queue + i, GFP_KERNEL);
+		}
+	}
+
+	spin_lock_init(&vcq->lock);
+
+	kfree(rsp);
+	kfree(cmd);
+	return 0;
+
+err:
+	if (entry)
+		kfree(entry);
+	kfree(rsp);
+err_rsp:
+	kfree(cmd);
+err_cmd:
+	dma_free_coherent(vdev->vdev->dev.parent, vcq->queue_size,
+			  vcq->queue, vcq->dma_addr);
+	return rc;
+}
+
+static int virtio_rdma_destroy_cq(struct ib_cq *cq, struct ib_udata *udata)
+{
+	struct virtio_rdma_cq *vcq = to_vcq(cq);
+	struct virtio_rdma_dev *vdev = to_vdev(cq->device);
+	struct scatterlist in;
+	struct cmd_destroy_cq *cmd;
+
+	cmd = kmalloc(sizeof(*cmd), GFP_ATOMIC);
+	if (!cmd)
+		return -ENOMEM;
+
+	cmd->cqn = vcq->cq_handle;
+	sg_init_one(&in, cmd, sizeof(*cmd));
+
+	virtqueue_disable_cb(vcq->vq->vq);
+
+	virtio_rdma_exec_cmd(to_vdev(cq->device), VIRTIO_CMD_DESTROY_CQ,
+				  &in, NULL);
+
+	/* pop all from virtqueue, after host call virtqueue_drop_all,
+	 * prepare for next use.
+	 */
+	if (!udata)
+		while(virtqueue_detach_unused_buf(vcq->vq->vq));
+
+	atomic_dec(&to_vdev(cq->device)->num_cq);
+	virtqueue_enable_cb(vcq->vq->vq);
+
+	if (vcq->entry)
+		rdma_user_mmap_entry_remove(vcq->entry);
+
+	to_vdev(cq->device)->cqs[vcq->cq_handle] = NULL;
+
+	dma_free_coherent(vdev->vdev->dev.parent, vcq->queue_size,
+					vcq->queue, vcq->dma_addr);
+	kfree(cmd);
+	return 0;
+}
+
+int virtio_rdma_req_notify_cq(struct ib_cq *ibcq,
+			      enum ib_cq_notify_flags flags)
+{
+	struct virtio_rdma_cq *vcq = to_vcq(ibcq);
+	struct cmd_req_notify *cmd;
+	struct rsp_req_notify *rsp;
+	struct scatterlist in, out;
+	int rc;
+
+	if (flags & IB_CQ_SOLICITED_MASK) {
+		cmd = kzalloc(sizeof(*cmd), GFP_ATOMIC);
+		if (!cmd)
+			return -ENOMEM;
+
+		rsp = kzalloc(sizeof(*rsp), GFP_ATOMIC);
+		if (!rsp) {
+			kfree(cmd);
+			return -ENOMEM;
+		}
+
+		cmd->cqn = vcq->cq_handle;
+		cmd->flags = (flags & IB_CQ_SOLICITED_MASK) == IB_CQ_SOLICITED ?
+			VIRTIO_RDMA_NOTIFY_SOLICITED : VIRTIO_RDMA_NOTIFY_NEXT_COMPLETION;
+
+		sg_init_one(&in, cmd, sizeof(*cmd));
+		sg_init_one(&out, rsp, sizeof(*rsp));
+
+		rc = virtio_rdma_exec_cmd(to_vdev(ibcq->device),
+								  VIRTIO_CMD_REQ_NOTIFY_CQ, &in, &out);
+		
+		kfree(cmd);
+		kfree(rsp);
+		if (rc)
+			return -EIO;
+	}
+
+	// FIXME: not support in userspace
+	if (flags & IB_CQ_REPORT_MISSED_EVENTS)
+		return -EOPNOTSUPP;
+
+	return 0;
+}
+
 static int virtio_rdma_port_immutable(struct ib_device *ibdev, u32 port_num,
 				      struct ib_port_immutable *immutable)
 {
