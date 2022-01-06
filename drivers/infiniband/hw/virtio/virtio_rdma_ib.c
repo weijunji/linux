@@ -1001,6 +1001,41 @@ static int virtio_rdma_destroy_ah(struct ib_ah *ah, u32 flags)
 	return 0;
 }
 
+/* This verb is relevant only for InfiniBand */
+static int virtio_rdma_query_pkey(struct ib_device *ibdev, u32 port, u16 index,
+			   u16 *pkey)
+{
+	struct scatterlist in, out;
+	struct cmd_query_pkey *cmd;
+	struct rsp_query_pkey *rsp;
+	int rc;
+	
+	cmd = kmalloc(sizeof(*cmd), GFP_ATOMIC);
+	if (!cmd)
+		return -ENOMEM;
+
+	rsp = kmalloc(sizeof(*rsp), GFP_ATOMIC);
+	if (!rsp) {
+		kfree(cmd);
+		return -ENOMEM;
+	}
+
+	cmd->port = port;
+	cmd->index = index;
+
+	sg_init_one(&in, cmd, sizeof(*cmd));
+	sg_init_one(&out, rsp, sizeof(*rsp));
+
+	rc = virtio_rdma_exec_cmd(to_vdev(ibdev), VIRTIO_CMD_QUERY_PKEY,
+	                          &in, &out);
+
+	*pkey = rsp->pkey;
+	
+	kfree(cmd);
+	kfree(rsp);
+	return rc;
+}
+
 static int virtio_rdma_port_immutable(struct ib_device *ibdev, u32 port_num,
 				      struct ib_port_immutable *immutable)
 {
