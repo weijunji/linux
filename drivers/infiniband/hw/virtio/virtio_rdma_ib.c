@@ -52,8 +52,6 @@ static const char* cmd_name[] = {
 	[VIRTIO_CMD_MODIFY_QP] = "VIRTIO_CMD_MODIFY_QP",
 	[VIRTIO_CMD_QUERY_QP] = "VIRTIO_CMD_QUERY_QP",
 	[VIRTIO_CMD_DESTROY_QP] = "VIRTIO_CMD_DESTROY_QP",
-	[VIRTIO_CMD_CREATE_UC] = "VIRTIO_CMD_CREATE_UC",
-	[VIRTIO_CMD_DEALLOC_UC] = "VIRTIO_CMD_DEALLOC_UC",
 	[VIRTIO_CMD_QUERY_PKEY] = "VIRTIO_CMD_QUERY_PKEY",
 	[VIRTIO_CMD_ADD_GID] = "VIRTIO_CMD_ADD_GID",
 	[VIRTIO_CMD_DEL_GID] = "VIRTIO_CMD_DEL_GID",
@@ -106,7 +104,6 @@ void rdma_ah_attr_to_virtio_rdma(struct virtio_rdma_ah_attr *dst,
 	dst->static_rate = rdma_ah_get_static_rate(src);
 	dst->port_num = rdma_ah_get_port_num(src);
 	dst->ah_flags = rdma_ah_get_ah_flags(src);
-	dst->type = src->type;
 	memcpy(&dst->roce, &src->roce, sizeof(struct roce_ah_attr));
 }
 
@@ -269,23 +266,23 @@ static int virtio_rdma_query_port(struct ib_device *ibdev, u32 port,
 	props->active_mtu = port_attr.active_mtu;
 	props->phys_mtu = port_attr.phys_mtu;
 	props->gid_tbl_len = port_attr.gid_tbl_len;
-	props->ip_gids = port_attr.ip_gids;
+	props->ip_gids = 1;
 	props->port_cap_flags = port_attr.port_cap_flags;
 	props->max_msg_sz = port_attr.max_msg_sz;
 	props->bad_pkey_cntr = port_attr.bad_pkey_cntr;
 	props->qkey_viol_cntr = port_attr.qkey_viol_cntr;
 	props->pkey_tbl_len = port_attr.pkey_tbl_len;
-	props->sm_lid = port_attr.sm_lid;
-	props->lid = port_attr.lid;
-	props->lmc = port_attr.lmc;
-	props->max_vl_num = port_attr.max_vl_num;
-	props->sm_sl = port_attr.sm_sl;
-	props->subnet_timeout = port_attr.subnet_timeout;
-	props->init_type_reply = port_attr.init_type_reply;
+	props->sm_lid = 0;
+	props->lid = 0;
+	props->lmc = 0;
+	props->max_vl_num = 1;
+	props->sm_sl = 0;
+	props->subnet_timeout = 0;
+	props->init_type_reply = 0;
 	props->active_width = port_attr.active_width;
 	props->active_speed = port_attr.active_speed;
 	props->phys_state = port_attr.phys_state;
-	props->port_cap_flags2 = port_attr.port_cap_flags2;
+	props->port_cap_flags2 = 0;
 
 	kfree(out);
 	kfree(cmd);
@@ -459,29 +456,18 @@ static int virtio_rdma_alloc_pd(struct ib_pd *ibpd, struct ib_udata *udata)
 {
 	struct virtio_rdma_pd *pd = to_vpd(ibpd);
 	struct ib_device *ibdev = ibpd->device;
-	struct cmd_create_pd *cmd;
 	struct rsp_create_pd *rsp;
-	struct scatterlist out, in;
+	struct scatterlist out;
 	int rc;
-	struct virtio_rdma_ucontext *context = rdma_udata_to_drv_context(
-		udata, struct virtio_rdma_ucontext, ibucontext);
-
-	cmd = kmalloc(sizeof(*cmd), GFP_ATOMIC);
-	if (!cmd)
-		return -ENOMEM;
 
 	rsp = kmalloc(sizeof(*rsp), GFP_ATOMIC);
 	if (!rsp) {
-		kfree(cmd);
 		return -ENOMEM;
 	}
 
-	cmd->ctx_handle = context ? context->ctx_handle : 0;
-	sg_init_one(&in, cmd, sizeof(*cmd));
-
 	sg_init_one(&out, rsp, sizeof(*rsp));
 
-	rc = virtio_rdma_exec_cmd(to_vdev(ibdev), VIRTIO_CMD_CREATE_PD, &in,
+	rc = virtio_rdma_exec_cmd(to_vdev(ibdev), VIRTIO_CMD_CREATE_PD, NULL,
 				  &out);
 	if (rc)
 		goto out;
@@ -501,7 +487,6 @@ static int virtio_rdma_alloc_pd(struct ib_pd *ibpd, struct ib_udata *udata)
 
 out:
 	kfree(rsp);
-	kfree(cmd);
 	return rc;
 }
 
@@ -531,8 +516,8 @@ struct ib_mr *virtio_rdma_get_dma_mr(struct ib_pd *pd, int flags)
 {
 	struct virtio_rdma_mr *mr;
 	struct scatterlist in, out;
-	struct cmd_create_mr *cmd;
-	struct rsp_create_mr *rsp;
+	struct cmd_get_dma_mr *cmd;
+	struct rsp_get_dma_mr *rsp;
 	int rc;
 
 	mr = kzalloc(sizeof(*mr), GFP_ATOMIC);
@@ -570,8 +555,6 @@ struct ib_mr *virtio_rdma_get_dma_mr(struct ib_pd *pd, int flags)
 	mr->mr_handle = rsp->mrn;
 	mr->ibmr.lkey = rsp->lkey;
 	mr->ibmr.rkey = rsp->rkey;
-	mr->type = VIRTIO_RDMA_TYPE_KERNEL;
-	to_vpd(pd)->type = VIRTIO_RDMA_TYPE_KERNEL;
 	mr->pages = NULL;
 	mr->pages_k = NULL;
 
@@ -670,8 +653,6 @@ static struct ib_mr *virtio_rdma_alloc_mr(struct ib_pd *pd, enum ib_mr_type mr_t
 	mr->mr_handle = rsp->mrn;
 	mr->ibmr.lkey = rsp->lkey;
 	mr->ibmr.rkey = rsp->rkey;
-	mr->type = VIRTIO_RDMA_TYPE_KERNEL;
-	vpd->type = VIRTIO_RDMA_TYPE_KERNEL;
 
 	pr_info("%s: mr_handle=0x%x\n", __func__, mr->mr_handle);
 
@@ -848,8 +829,6 @@ struct ib_mr *virtio_rdma_reg_user_mr(struct ib_pd *pd, u64 start, u64 length,
 	mr->mr_handle = rsp->mrn;
 	mr->ibmr.lkey = rsp->lkey;
 	mr->ibmr.rkey = rsp->rkey;
-	mr->type = VIRTIO_RDMA_TYPE_USER;
-	vpd->type = VIRTIO_RDMA_TYPE_USER;
 
 	printk("%s: mr_handle=0x%x\n", __func__, mr->mr_handle);
 
@@ -876,7 +855,6 @@ int virtio_rdma_dereg_mr(struct ib_mr *ibmr, struct ib_udata *udata)
 		return -ENOMEM;
 
 	cmd->mrn = mr->mr_handle;
-	cmd->is_user_mr = mr->type == VIRTIO_RDMA_TYPE_USER;
 
 	sg_init_one(&in, cmd, sizeof(*cmd));
 
@@ -900,7 +878,7 @@ int virtio_rdma_dereg_mr(struct ib_mr *ibmr, struct ib_udata *udata)
 						mr->pages, GFP_KERNEL);
 	}
 
-	if (mr->type == VIRTIO_RDMA_TYPE_USER)
+	if (udata)
 		ib_umem_release(mr->umem);
 
 out:
@@ -967,6 +945,11 @@ struct ib_qp *virtio_rdma_create_qp(struct ib_pd *ibpd,
 	int rc, vqn;
 	struct ib_qp *ret;
 
+	if (attr->srq) {
+		pr_err("srq not supported now");
+		return ERR_PTR(-EOPNOTSUPP);
+	}
+
 	if (!atomic_add_unless(&vdev->num_qp, 1, vdev->ib_dev.attrs.max_qp))
 		return ERR_PTR(-ENOMEM);
 
@@ -999,8 +982,6 @@ struct ib_qp *virtio_rdma_create_qp(struct ib_pd *ibpd,
 	cmd->max_recv_wr = attr->cap.max_recv_wr;
 	cmd->max_recv_sge = attr->cap.max_recv_sge;
 	cmd->recv_cqn = to_vcq(attr->recv_cq)->cq_handle;
-	cmd->is_srq = !!attr->srq;
-	cmd->srq_handle = 0; // Not support srq now
 	cmd->max_inline_data = attr->cap.max_inline_data;
 
 	sg_init_one(&in, cmd, sizeof(*cmd));
@@ -1015,7 +996,7 @@ struct ib_qp *virtio_rdma_create_qp(struct ib_pd *ibpd,
 		goto out_err;
 	}
 
-	vqp->type = vpd->type;
+	vqp->type = udata ? VIRTIO_RDMA_TYPE_USER : VIRTIO_RDMA_TYPE_KERNEL;
 	vqp->port = attr->port_num;
 	vqp->qp_handle = rsp->qpn;
 	vqp->ibqp.qp_num = rsp->qpn;
@@ -1186,59 +1167,15 @@ static int virtio_rdma_del_gid(const struct ib_gid_attr *attr, void **context)
 
 int virtio_rdma_alloc_ucontext(struct ib_ucontext *uctx, struct ib_udata *udata)
 {
-	struct scatterlist in, out;
-	struct cmd_create_uc *cmd;
-	struct rsp_create_uc *rsp;
 	struct virtio_rdma_ucontext *vuc = to_vucontext(uctx);
-	int rc;
 	
-	cmd = kmalloc(sizeof(*cmd), GFP_ATOMIC);
-	if (!cmd)
-		return -ENOMEM;
+	vuc->dev = to_vdev(uctx->device);
 
-	rsp = kmalloc(sizeof(*rsp), GFP_ATOMIC);
-	if (!rsp) {
-		kfree(cmd);
-		return -ENOMEM;
-	}
-
-	// TODO: init uar & set cmd->pfn
-	sg_init_one(&in, cmd, sizeof(*cmd));
-	sg_init_one(&out, rsp, sizeof(*rsp));
-
-	rc = virtio_rdma_exec_cmd(to_vdev(uctx->device), VIRTIO_CMD_CREATE_UC, &in,
-				  &out);
-
-	if (rc) {
-		rc = -EIO;
-		goto out;
-	}
-
-	vuc->ctx_handle = rsp->ctx_handle;
-
-out:
-	kfree(rsp);
-	kfree(cmd);
-	return rc;
+	return 0;
 }
 
 static void virtio_rdma_dealloc_ucontext(struct ib_ucontext *ibcontext)
 {
-	struct scatterlist in;
-	struct cmd_dealloc_uc *cmd;
-	struct virtio_rdma_ucontext *vuc = to_vucontext(ibcontext);
-	
-	cmd = kmalloc(sizeof(*cmd), GFP_ATOMIC);
-	if (!cmd)
-		return;
-
-	cmd->ctx_handle = vuc->ctx_handle;
-	sg_init_one(&in, cmd, sizeof(*cmd));
-
-	virtio_rdma_exec_cmd(to_vdev(ibcontext->device), VIRTIO_CMD_DEALLOC_UC, &in,
-				  NULL);
-
-	kfree(cmd);
 }
 
 static int virtio_rdma_create_ah(struct ib_ah *ibah,
@@ -1263,8 +1200,6 @@ static int virtio_rdma_create_ah(struct ib_ah *ibah,
 
 	ah->av.port = port_num;
 	ah->av.pdn = to_vpd(ibah->pd)->pd_handle;
-	ah->av.src_path_bits = rdma_ah_get_path_bits(init_attr->ah_attr);
-	ah->av.src_path_bits |= 0x80;
 	ah->av.gid_index = grh->sgid_index;
 	ah->av.hop_limit = grh->hop_limit;
 	ah->av.sl_tclass_flowlabel = (grh->traffic_class << 20) |
@@ -1565,8 +1500,6 @@ int virtio_rdma_post_recv(struct ib_qp *ibqp, const struct ib_recv_wr *wr,
 			goto out;
 		}
 
-		cmd->qpn = to_vqp(ibqp)->qp_handle;
-		cmd->is_kernel = 1;
 		cmd->num_sge = wr->num_sge;
 		cmd->wr_id = wr->wr_id;
 		memcpy((char*)cmd + sizeof(*cmd), wr->sg_list, sgl_len);
@@ -1642,8 +1575,6 @@ int virtio_rdma_post_send(struct ib_qp *ibqp, const struct ib_send_wr *wr,
 			goto out;
 		}
 
-		cmd->qpn = vqp->qp_handle;
-		cmd->is_kernel = 1;
 		cmd->num_sge = wr->num_sge;
 		cmd->send_flags = wr->send_flags;
 		cmd->opcode = wr->opcode;

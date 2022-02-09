@@ -46,25 +46,18 @@ struct virtio_rdma_config {
     __le32         max_mr;
     __le32         max_pd;
     __le32         max_qp_rd_atom;
-    __le32         max_ee_rd_atom;
     __le32         max_res_rd_atom;
     __le32         max_qp_init_rd_atom;
-    __le32         max_ee_init_rd_atom;
     __le32         atomic_cap;
-    __le32         max_ee;
-    __le32         max_rdd;
     __le32         max_mw;
     __le32         max_mcast_grp;
     __le32         max_mcast_qp_attach;
     __le32         max_total_mcast_qp_attach;
     __le32         max_ah;
-    __le32         max_srq;
-    __le32         max_srq_wr;
-    __le32         max_srq_sge;
     __le32         max_fast_reg_page_list_len;
     __le32         max_pi_fast_reg_page_list_len;
     __le16         max_pkeys;
-	__u8           local_ca_ack_delay;
+    __u8           local_ca_ack_delay;
 
     __u8           reserved[64];
 } __attribute__((packed));
@@ -93,8 +86,6 @@ enum {
     VIRTIO_CMD_MODIFY_QP,
 	VIRTIO_CMD_QUERY_QP,
     VIRTIO_CMD_DESTROY_QP,
-	VIRTIO_CMD_CREATE_UC,
-	VIRTIO_CMD_DEALLOC_UC,
 	VIRTIO_CMD_QUERY_PKEY,
 	VIRTIO_CMD_ADD_GID,
     VIRTIO_CMD_DEL_GID,
@@ -129,16 +120,23 @@ struct cmd_destroy_cq {
 	__u32 cqn;
 };
 
-struct cmd_create_pd {
-	__u32 ctx_handle;
-};
-
 struct rsp_create_pd {
 	__u32 pdn;
 };
 
 struct cmd_destroy_pd {
 	__u32 pdn;
+};
+
+struct cmd_get_dma_mr {
+	__u32 pdn;
+	__u32 access_flags;
+};
+
+struct rsp_get_dma_mr {
+	__u32 mrn;
+	__u32 lkey;
+	__u32 rkey;
 };
 
 struct cmd_create_mr {
@@ -186,8 +184,6 @@ struct rsp_reg_user_mr {
 
 struct cmd_dereg_mr {
     __u32 mrn;
-
-	__u8 is_user_mr;
 };
 
 struct cmd_create_qp {
@@ -200,8 +196,6 @@ struct cmd_create_qp {
     __u32 max_recv_wr;
     __u32 max_recv_sge;
     __u32 recv_cqn;
-    __u8 is_srq;
-    __u32 srq_handle;
 
 	__u32 max_inline_data;
 };
@@ -236,18 +230,6 @@ struct rsp_query_qp {
 struct cmd_query_gid {
     __u32 port;
 	__u32 index;
-};
-
-struct cmd_create_uc {
-	__u64 pfn;
-};
-
-struct rsp_create_uc {
-	__u32 ctx_handle;
-};
-
-struct cmd_dealloc_uc {
-	__u32 ctx_handle;
 };
 
 struct cmd_query_pkey {

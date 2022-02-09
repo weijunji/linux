@@ -56,30 +56,21 @@ struct virtio_rdma_port_attr {
 	enum ib_mtu	 max_mtu;
 	enum ib_mtu	 active_mtu;
 	u32          phys_mtu;
-	int			 gid_tbl_len;
-	unsigned int ip_gids:1;
-	u32			 port_cap_flags;
+	int          gid_tbl_len;
+	u32          port_cap_flags;
 	u32          max_msg_sz;
 	u32          bad_pkey_cntr;
 	u32          qkey_viol_cntr;
 	u16          pkey_tbl_len;
-	u32          sm_lid;
-	u32          lid;
-	u8           lmc;
-	u8           max_vl_num;
-	u8           sm_sl;
-	u8           subnet_timeout;
-	u8           init_type_reply;
 	u8           active_width;
 	u16          active_speed;
 	u8           phys_state;
-	u16          port_cap_flags2;
+	u32          reserved[32];
 };
 
 struct virtio_rdma_pd {
 	struct ib_pd ibpd;
 	u32 pd_handle;
-	enum virtio_rdma_type type;
 };
 
 struct virtio_rdma_mr {
@@ -87,7 +78,6 @@ struct virtio_rdma_mr {
 	struct ib_umem *umem;
 
 	u32 mr_handle;
-	enum virtio_rdma_type type;
 	u64 iova;
 	u64 size;
 
@@ -155,10 +145,7 @@ struct virtio_rdma_ah_attr {
 	uint8_t		static_rate;
 	uint8_t		port_num;
 	uint8_t		ah_flags;
-	uint8_t		type;
-	union {
-		struct roce_ah_attr roce;
-	};
+	struct roce_ah_attr roce;
 };
 
 struct virtio_rdma_qp_cap {
@@ -198,17 +185,10 @@ struct virtio_rdma_qp_attr {
 	struct virtio_rdma_ah_attr	alt_ah_attr;
 };
 
-struct virtio_rdma_uar_map {
-	unsigned long pfn;
-	void __iomem *map;
-	int index;
-};
 
 struct virtio_rdma_ucontext {
 	struct ib_ucontext ibucontext;
 	struct virtio_rdma_dev *dev;
-	struct virtio_rdma_uar_map uar;
-	__u64 ctx_handle;
 };
 
 struct virtio_rdma_ah {
