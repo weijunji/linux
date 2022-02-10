@@ -38,11 +38,6 @@ static int virtio_rdma_probe(struct virtio_device *vdev)
 	struct virtio_rdma_dev *ri;
 	int rc = -EIO;
 
-	if (to_vp_device(vdev)->mdev.notify_offset_multiplier != PAGE_SIZE) {
-		pr_err("notify_offset_multiplier is NOT equal to PAGE_SIZE");
-		goto out;
-	}
-
 	ri = ib_alloc_device(virtio_rdma_dev, ib_dev);
 	if (!ri) {
 		pr_err("Fail to allocate IB device\n");
@@ -50,6 +45,13 @@ static int virtio_rdma_probe(struct virtio_device *vdev)
 		goto out;
 	}
 	vdev->priv = ri;
+
+	if (to_vp_device(vdev)->mdev.notify_offset_multiplier != PAGE_SIZE) {
+		pr_warn("notify_offset_multiplier is NOT equal to PAGE_SIZE");
+		ri->fast_doorbell = false;
+	} else {
+		ri->fast_doorbell = true;
+	}
 
 	ri->vdev = vdev;
 

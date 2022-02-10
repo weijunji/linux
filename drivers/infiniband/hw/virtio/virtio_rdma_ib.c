@@ -892,7 +892,10 @@ static void* virtio_rdma_init_mmap_entry(struct virtio_rdma_dev *vdev,
 
 	*used_off = virtqueue_get_used_addr(vq) - virtqueue_get_desc_addr(vq);
 	*vq_size = PAGE_ALIGN(vring_size(virtqueue_get_vring_size(vq), SMP_CACHE_BYTES));
-	total_size += *vq_size + PAGE_SIZE;
+	total_size += *vq_size;
+
+	if (vdev->fast_doorbell)
+		total_size += PAGE_SIZE;
 
 	rc = rdma_user_mmap_entry_insert(&vctx->ibucontext, &entry->rdma_entry,
 			total_size);
@@ -1019,7 +1022,7 @@ struct ib_qp *virtio_rdma_create_qp(struct ib_pd *ibpd,
 		uresp.num_rvqe = virtqueue_get_vring_size(vqp->rq->vq);
 		uresp.rq_idx = vqp->rq->vq->index;
 
-		uresp.page_size = PAGE_SIZE;
+		uresp.notifier_size = vdev->fast_doorbell ? PAGE_SIZE : 0;
 		uresp.qpn = vqp->qp_handle;
 
 		if (udata->outlen < sizeof(uresp)) {
@@ -1451,6 +1454,9 @@ int virtio_rdma_post_recv(struct ib_qp *ibqp, const struct ib_recv_wr *wr,
 	unsigned int sgl_len;
 	void* ptr;
 
+	if (vqp->type == VIRTIO_RDMA_TYPE_USER)
+		goto kick_vq;
+
 	if (vqp->ibqp.qp_type == IB_QPT_SMI)
 		return -EOPNOTSUPP;
 
@@ -1493,6 +1499,7 @@ out:
 	spin_unlock(&vqp->rq->lock);
 
 	kfree(cmd);
+kick_vq:
 	virtqueue_kick(vqp->rq->vq);
 	return rc;
 }
@@ -1520,6 +1527,9 @@ int virtio_rdma_post_send(struct ib_qp *ibqp, const struct ib_send_wr *wr,
 	unsigned tmp;
 	unsigned int sgl_len;
 	void* ptr;
+
+	if (vqp->type == VIRTIO_RDMA_TYPE_USER)
+		goto kick_vq;
 
 	spin_lock(&vqp->sq->lock);
 
@@ -1634,6 +1644,7 @@ out:
 	spin_unlock(&vqp->sq->lock);
 
 	kfree(cmd);
+kick_vq:
 	virtqueue_kick(vqp->sq->vq);
 	return rc;
 }
