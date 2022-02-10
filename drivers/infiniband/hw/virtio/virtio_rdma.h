@@ -58,6 +58,8 @@ struct virtio_rdma_dev {
 	u32 port_cap_mask;
 	// TODO: check ib_active before operations
 	bool ib_active;
+
+	bool fast_doorbell;
 };
 
 static inline struct virtio_rdma_dev *to_vdev(struct ib_device *ibdev)

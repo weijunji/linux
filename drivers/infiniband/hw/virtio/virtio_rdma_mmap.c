@@ -77,23 +77,30 @@ int virtio_rdma_mmap(struct ib_ucontext *ctx, struct vm_area_struct *vma)
 		}
 	} else if (entry->type == VIRTIO_RDMA_MMAP_QP) {
 		uint64_t vq_size = PAGE_ALIGN(vring_size(virtqueue_get_vring_size(entry->queue), SMP_CACHE_BYTES));
-		WARN_ON(vq_size + entry->ubuf_size + PAGE_SIZE != vma->vm_end - vma->vm_start);
+		uint64_t total_size = vq_size + entry->ubuf_size;
+		
+		if (uctx->dev->fast_doorbell)
+			total_size += PAGE_SIZE;
 
-		// doorbell
-		rc = io_remap_pfn_range(vma, vma->vm_start,
-			       vmalloc_to_pfn(entry->queue->priv),
-			       PAGE_SIZE, vma->vm_page_prot);
+		WARN_ON(total_size != vma->vm_end - vma->vm_start);
 
 		// vring
-		rc = remap_pfn_range(vma, vma->vm_start + PAGE_SIZE,
+		rc = remap_pfn_range(vma, vma->vm_start,
 			       page_to_pfn(virt_to_page((virtqueue_get_vring(entry->queue)->desc))),
 			       vq_size, vma->vm_page_prot);
 
 		// user buffer
 		sprintf(entry->ubuf, "WW");
-		rc = remap_pfn_range(vma, vma->vm_start + PAGE_SIZE + vq_size,
+		rc = remap_pfn_range(vma, vma->vm_start + vq_size,
 			       page_to_pfn(virt_to_page(entry->ubuf)), entry->ubuf_size,
 				   vma->vm_page_prot);
+
+		// doorbell
+		if (uctx->dev->fast_doorbell) {
+			rc = io_remap_pfn_range(vma, vma->vm_start + vq_size + entry->ubuf_size,
+			       vmalloc_to_pfn(entry->queue->priv),
+			       PAGE_SIZE, vma->vm_page_prot);
+		}
 
 		if (rc) {
 			pr_warn("remap_pfn_range failed: %lu, %zu\n", vma->vm_pgoff,
