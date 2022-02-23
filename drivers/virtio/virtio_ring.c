@@ -2068,6 +2068,15 @@ bool virtqueue_poll(struct virtqueue *_vq, unsigned last_used_idx)
 }
 EXPORT_SYMBOL_GPL(virtqueue_poll);
 
+bool virtqueue_unused(struct virtqueue *_vq)
+{
+	struct vring_virtqueue *vq = to_vvq(_vq);
+
+	return (u16)(vq->last_used_idx) != virtio16_to_cpu(_vq->vdev,
+			vq->split.vring.used->idx);
+}
+EXPORT_SYMBOL_GPL(virtqueue_unused);
+
 /**
  * virtqueue_enable_cb - restart callbacks after disable_cb.
  * @_vq: the struct virtqueue we're talking about.

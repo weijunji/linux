@@ -460,8 +460,9 @@ int virtio_rdma_req_notify_cq(struct ib_cq *ibcq,
 	}
 
 	// FIXME: not support in userspace
-	if (flags & IB_CQ_REPORT_MISSED_EVENTS)
-		return -EOPNOTSUPP;
+	if (flags & IB_CQ_REPORT_MISSED_EVENTS) {
+		return virtqueue_unused(vcq->vq->vq);
+	}
 
 	return 0;
 }
@@ -606,7 +607,7 @@ static struct ib_mr *virtio_rdma_alloc_mr(struct ib_pd *pd, enum ib_mr_type mr_t
 	mr->ibmr.lkey = rsp->lkey;
 	mr->ibmr.rkey = rsp->rkey;
 
-	pr_info("%s: mr_handle=0x%x\n", __func__, mr->mr_handle);
+	pr_info("%s: mr_handle=0x%x rkey=0x%x\n", __func__, mr->mr_handle, mr->ibmr.rkey);
 
 	kfree(cmd);
 	kfree(rsp);
@@ -680,6 +681,9 @@ int virtio_rdma_map_mr_sg(struct ib_mr *ibmr, struct scatterlist *sg,
 
 	if (rc)
 		rc = -EIO;
+
+	pr_info("map %u pages\n", rsp->npages);
+	rc = rsp->npages;
 
 out:
 	kfree(rsp);
@@ -1014,6 +1018,7 @@ struct ib_qp *virtio_rdma_create_qp(struct ib_pd *ibpd,
 
 	pr_info("%s: qpn 0x%x wq %d rq %d\n", __func__, rsp->qpn,
 	        vqp->sq->vq->index, vqp->rq->vq->index);
+	vdev->qps[rsp->qpn] = vqp;
 	ret = &vqp->ibqp;
 	goto out;
 
@@ -1062,6 +1067,7 @@ int virtio_rdma_destroy_qp(struct ib_qp *ibqp, struct ib_udata *udata)
 		rdma_user_mmap_entry_remove(&vqp->rq_entry->rdma_entry);
 	}
 
+	vdev->qps[cmd->qpn] = NULL;
 	atomic_dec(&vdev->num_qp);
 
 	kfree(cmd);
@@ -1340,6 +1346,7 @@ static int virtio_rdma_query_pkey(struct ib_device *ibdev, u32 port, u16 index,
 
 int virtio_rdma_poll_cq(struct ib_cq *ibcq, int num_entries, struct ib_wc *wc)
 {
+	struct virtio_rdma_dev *vdev = to_vdev(ibcq->device);
 	struct virtio_rdma_cq *vcq = to_vcq(ibcq);
 	struct virtio_rdma_cqe *cqe;
 	int i = 0;
@@ -1359,7 +1366,7 @@ int virtio_rdma_poll_cq(struct ib_cq *ibcq, int num_entries, struct ib_wc *wc)
 		wc[i].opcode = cqe->opcode;
 		wc[i].vendor_err = cqe->vendor_err;
 		wc[i].byte_len = cqe->byte_len;
-		// TODO: wc[i].qp
+		wc[i].qp = &vdev->qps[cqe->qp_num]->ibqp;
 		wc[i].ex.imm_data = cqe->ex.imm_data;
 		wc[i].src_qp = cqe->src_qp;
 		wc[i].slid = cqe->slid;
@@ -1465,16 +1472,6 @@ int virtio_rdma_post_send(struct ib_qp *ibqp, const struct ib_send_wr *wr,
 	spin_lock(&vqp->sq->lock);
 
 	while (wr) {
-		if (vqp->type == VIRTIO_RDMA_TYPE_KERNEL &&
-			wr->opcode != IB_WR_SEND && wr->opcode != IB_WR_SEND_WITH_IMM &&
-			wr->opcode != IB_WR_REG_MR &&
-			wr->opcode != IB_WR_LOCAL_INV && wr->opcode != IB_WR_SEND_WITH_INV) {
-			pr_warn("Only support op send in kernel\n");
-			*bad_wr = wr;
-			rc = -EINVAL;
-			goto out;
-		}
-
 		while ((ptr = virtqueue_get_buf(vqp->rq->vq, &tmp)) != NULL) {
 			kfree(ptr);
 		}
@@ -1493,7 +1490,6 @@ int virtio_rdma_post_send(struct ib_qp *ibqp, const struct ib_send_wr *wr,
 		cmd->opcode = wr->opcode;
 		cmd->wr_id = wr->wr_id;
 		cmd->ex.imm_data = wr->ex.imm_data;
-		cmd->ex.invalidate_rkey = wr->ex.invalidate_rkey;
 
 		switch (ibqp->qp_type) {
 		case IB_QPT_GSI:
