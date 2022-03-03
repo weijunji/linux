@@ -28,7 +28,7 @@ void virtio_rdma_cq_ack(struct virtqueue *vq)
 	struct virtio_rdma_dev *rdev;
 	struct virtio_rdma_cq *vcq;
 
-	rdev = vq->vdev->priv;
+	rdev = virtnet_get_roce_priv(vq->vdev->priv);
 	// vcq->vq's index is start from 1, 0 is ctrl vq
 	vcq = rdev->cqs[vq->index - 1];
 

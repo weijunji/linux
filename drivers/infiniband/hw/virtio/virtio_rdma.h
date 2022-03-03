@@ -21,12 +21,33 @@
 #ifndef __VIRTIO_RDMA__
 #define __VIRTIO_RDMA__
 
+#include <linux/auxiliary_bus.h>
 #include <linux/types.h>
 #include <linux/spinlock.h>
 #include <linux/virtio.h>
 #include <rdma/ib_verbs.h>
 
 #include "virtio_rdma_ib.h"
+
+#define VNET_ADEV_NAME "virtio_net"
+struct virtnet_adev {
+	struct auxiliary_device adev;
+	struct virtio_device *vdev;
+	struct net_device *ndev;
+
+	struct virtqueue *ctrl_vq;
+	struct virtio_rdma_vq* cq_vqs;
+	struct virtio_rdma_vq* qp_vqs;
+};
+
+// roce priv used in virtio_rdma_cq_ack to get virtio_rdma_dev from virtqueue
+struct virtnet_info;
+void virtnet_set_roce_priv(struct virtnet_info *vi, void* priv);
+void* virtnet_get_roce_priv(struct virtnet_info *vi);
+
+static inline struct virtnet_adev* to_vnet_adev(struct auxiliary_device* adev) {
+	return container_of(adev, struct virtnet_adev, adev);
+}
 
 struct virtio_rdma_dev {
 	struct ib_device ib_dev;
@@ -50,9 +71,6 @@ struct virtio_rdma_dev {
 	atomic_t num_qp;
 	atomic_t num_cq;
 	atomic_t num_ah;
-
-	struct list_head pending_mmaps;
-	spinlock_t pending_mmaps_lock;
 
 	// only for modify_port ?
 	struct mutex port_mutex;

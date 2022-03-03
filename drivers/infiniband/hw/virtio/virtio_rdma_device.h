@@ -26,7 +26,7 @@
 #define VIRTIO_RDMA_HW_REV	1
 #define VIRTIO_RDMA_DRIVER_VER	"1.0"
 
-int init_device(struct virtio_rdma_dev *dev);
+int init_device(struct virtnet_adev* vadev, struct virtio_rdma_dev *dev);
 void fini_device(struct virtio_rdma_dev *dev);
 
 #endif

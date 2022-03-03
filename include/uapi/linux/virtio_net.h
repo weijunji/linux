@@ -57,6 +57,8 @@
 					 * Steering */
 #define VIRTIO_NET_F_CTRL_MAC_ADDR 23	/* Set MAC address */
 
+#define VIRTIO_NET_F_ROCE	55	/* Device support roce_v2 */
+
 #define VIRTIO_NET_F_HASH_REPORT  57	/* Supports hash report */
 #define VIRTIO_NET_F_RSS	  60	/* Supports RSS RX steering */
 #define VIRTIO_NET_F_RSC_EXT	  61	/* extended coalescing info */
@@ -112,6 +114,37 @@ struct virtio_net_config {
 	__le16 rss_max_indirection_table_length;
 	/* bitmask of supported VIRTIO_NET_RSS_HASH_ types */
 	__le32 supported_hash_types;
+
+	__le32         phys_port_cnt;
+    __le64         sys_image_guid;
+    __le32         vendor_id;
+    __le32         vendor_part_id;
+    __le32         hw_ver;
+    __le64         max_mr_size;
+    __le64         page_size_cap;
+    __le32         max_qp;
+    __le32         max_qp_wr;
+    __le64         device_cap_flags;
+    __le32         max_send_sge;
+    __le32         max_recv_sge;
+    __le32         max_sge_rd;
+    __le32         max_cq;
+    __le32         max_cqe;
+    __le32         max_mr;
+    __le32         max_pd;
+    __le32         max_qp_rd_atom;
+    __le32         max_res_rd_atom;
+    __le32         max_qp_init_rd_atom;
+    __le32         atomic_cap;
+    __le32         max_mw;
+    __le32         max_mcast_grp;
+    __le32         max_mcast_qp_attach;
+    __le32         max_total_mcast_qp_attach;
+    __le32         max_ah;
+    __le32         max_fast_reg_page_list_len;
+    __le32         max_pi_fast_reg_page_list_len;
+    __le16         max_pkeys;
+    __u8          local_ca_ack_delay;
 } __attribute__((packed));
 
 /*

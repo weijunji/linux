@@ -21,7 +21,6 @@
 #define __VIRTIO_RDMA_QUEUE_H__
 
 #include "virtio_rdma_ib.h"
-#include "virtio_rdma_dev_api.h"
 
 struct scatterlist;
 

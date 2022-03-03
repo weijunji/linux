@@ -25,32 +25,9 @@
 #include "../../../virtio/virtio_pci_common.h"
 #include "virtio_rdma_netdev.h"
 
-int init_netdev(struct virtio_rdma_dev *ri)
+int init_netdev(struct virtnet_adev* vadev, struct virtio_rdma_dev *ri)
 {
-	struct pci_dev* pdev_net;
-	struct virtio_pci_device *vp_dev = to_vp_device(ri->vdev);
-	struct virtio_pci_device *vnet_pdev;
-	void* priv;
-
-	pdev_net = pci_get_slot(vp_dev->pci_dev->bus, PCI_DEVFN(PCI_SLOT(vp_dev->pci_dev->devfn), 0));
-	if (!pdev_net) {
-		pr_err("failed to find paired net device\n");
-		return -ENODEV;
-	}
-
-	if (pdev_net->vendor != PCI_VENDOR_ID_REDHAT_QUMRANET ||
-	    pdev_net->subsystem_device != VIRTIO_ID_NET) {
-		pr_err("failed to find paired virtio-net device\n");
-		pci_dev_put(pdev_net);
-		return -ENODEV;
-	}
-
-	vnet_pdev = pci_get_drvdata(pdev_net);
-	pci_dev_put(pdev_net);
-
-	priv = vnet_pdev->vdev.priv;
-	/* get netdev from virtnet_info, which is netdev->priv */
-	ri->netdev = priv - ALIGN(sizeof(struct net_device), NETDEV_ALIGN);
+	ri->netdev = vadev->ndev;
 
 	if (!ri->netdev) {
 		pr_err("failed to get backend net device\n");

@@ -23,7 +23,7 @@
 
 #include "virtio_rdma.h"
 
-int init_netdev(struct virtio_rdma_dev *ri);
+int init_netdev(struct virtnet_adev* vadev, struct virtio_rdma_dev *ri);
 void fini_netdev(struct virtio_rdma_dev *ri);
 
 #endif
