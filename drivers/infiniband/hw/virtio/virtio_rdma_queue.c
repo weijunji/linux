@@ -29,8 +29,8 @@ void virtio_rdma_cq_ack(struct virtqueue *vq)
 	struct virtio_rdma_cq *vcq;
 
 	rdev = virtnet_get_roce_priv(vq->vdev->priv);
-	// vcq->vq's index is start from 1, 0 is ctrl vq
-	vcq = rdev->cqs[vq->index - 1];
+	// FIXME: get how many vq used in net, not only -2
+	vcq = rdev->cqs[vq->index - 1 - 2];
 
 	if (vcq && vcq->ibcq.comp_handler)
 		vcq->ibcq.comp_handler(&vcq->ibcq, vcq->ibcq.cq_context);
